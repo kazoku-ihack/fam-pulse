@@ -1,0 +1,58 @@
+services:
+  - type: web
+    name: fam-pulse-api
+    runtime: node
+    plan: free
+    branch: master
+    buildCommand: npm ci
+    startCommand: node src/server.js
+    healthCheckPath: /health
+    envVars:
+      # --- non-secret operational config (safe defaults for a public judge-facing demo) ---
+      - key: DEMO_TIMESCALE
+        value: "30"
+      - key: ATTESTATION_MODE
+        value: stub
+      - key: ATTESTATION_FALLBACK
+        value: stub
+      - key: PROTOSURE_PRODUCT_CODE
+        value: KAZOKU-PARAM-001
+      - key: SIM_CARE_REPLY
+        value: "0"
+      - key: SIM_FAIL_DISPATCH
+        value: "0"
+      - key: AUTO_RESET_MINUTES
+        value: "30"
+      - key: MAX_DEMO_TX_PER_HOUR
+        value: "20"
+      - key: RATE_LIMIT_PER_MIN
+        value: "120"
+      - key: CORS_ORIGIN
+        value: "*" # lock to your Mendix domains + Judge Console origin before demo day
+      - key: FUJI_RPC
+        value: https://api.avax-test.network/ext/bc/C/rpc
+      - key: SEED_ON_BOOT
+        value: "1" # free-tier disk is ephemeral — reseed every deploy/restart
+      # --- secrets: fill in via the Render dashboard, never committed to git ---
+      - key: API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: SMTP_URL
+        sync: false
+      - key: IMAP_URL
+        sync: false
+      - key: SIGNER_PRIVATE_KEY
+        sync: false
+      - key: DEPLOYER_PRIVATE_KEY
+        sync: false
+      - key: JPYC_ADDR
+        sync: false
+      - key: PAYOUT_ADDR
+        sync: false
+      - key: PROTOSURE_BASE_URL
+        sync: false
+      - key: PROTOSURE_API_TOKEN
+        sync: false
+      - key: JUDGE_KEY
+        sync: false
