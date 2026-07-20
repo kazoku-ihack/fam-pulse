@@ -19,6 +19,7 @@ import { paymentsRouter } from './routes/payments.js';
 import { attestationRouter } from './routes/attestation.js';
 import { settingsRouter } from './routes/settings.js';
 import { demoRouter } from './routes/demo.js';
+import { API_INDEX, apiIndexHtml } from './apiIndex.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -43,6 +44,13 @@ export function createApp(db, deps = {}) {
   );
 
   app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+  app.get('/', (req, res) => {
+    if (req.accepts(['json', 'html']) === 'html') {
+      res.type('html').send(apiIndexHtml());
+    } else {
+      res.json(API_INDEX);
+    }
+  });
   app.use('/judge', express.static(path.join(__dirname, '..', 'public')));
 
   // Provider webhook: authenticated by HMAC signature, not x-api-key (a real Uber callback
