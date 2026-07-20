@@ -4,6 +4,7 @@ import cors from 'cors';
 import rateLimit from 'express-rate-limit';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import swaggerUiDist from 'swagger-ui-dist';
 
 import { openDb, seedIfEmpty, resetDb } from './db.js';
 import { apiKeyAuth, judgeKeyAuth } from './auth.js';
@@ -19,7 +20,8 @@ import { paymentsRouter } from './routes/payments.js';
 import { attestationRouter } from './routes/attestation.js';
 import { settingsRouter } from './routes/settings.js';
 import { demoRouter } from './routes/demo.js';
-import { API_INDEX, apiIndexHtml } from './apiIndex.js';
+import { API_INDEX, apiIndexHtml, swaggerDocsHtml } from './apiIndex.js';
+import { openApiSpec } from './openapi.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +54,11 @@ export function createApp(db, deps = {}) {
     }
   });
   app.use('/judge', express.static(path.join(__dirname, '..', 'public')));
+
+  app.get('/openapi.json', (req, res) => res.json(openApiSpec));
+  app.get('/docs', (req, res) => res.type('html').send(swaggerDocsHtml()));
+  // Self-hosted Swagger UI assets (no CDN dependency — works even if a venue blocks it mid-demo).
+  app.use('/docs', express.static(swaggerUiDist.absolutePath()));
 
   // Provider webhook: authenticated by HMAC signature, not x-api-key (a real Uber callback
   // would never carry our internal API key) — must be mounted before apiKeyAuth.

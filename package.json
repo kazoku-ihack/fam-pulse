@@ -25,6 +25,7 @@
     "imapflow": "^1.0.171",
     "mailparser": "^3.7.2",
     "nodemailer": "^6.9.16",
+    "swagger-ui-dist": "^5.32.9",
     "zod": "^3.24.1"
   },
   "devDependencies": {

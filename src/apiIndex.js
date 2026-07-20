@@ -3,9 +3,11 @@
 
 export const API_INDEX = {
   name: 'Kazoku Pulse — Demo API',
-  docs: 'https://github.com/kazoku-ihack/fam-pulse#readme',
+  interactiveDocs: '/docs',
+  openApiSpec: '/openapi.json',
+  repo: 'https://github.com/kazoku-ihack/fam-pulse#readme',
   judgeConsole: '/judge/judge.html',
-  note: 'Every route below requires header "x-api-key: <your key>" except the ones marked public.',
+  note: 'Every route below requires header "x-api-key: <your key>" except the ones marked public. Full request/response schemas: /docs.',
   routes: [
     { method: 'GET', path: '/health', auth: 'public' },
     { method: 'GET', path: '/judge/judge.html', auth: 'public', description: 'Judge Console (static page)' },
@@ -82,9 +84,45 @@ export function apiIndexHtml() {
 </style></head>
 <body>
   <h1>${API_INDEX.name}</h1>
-  <p class="note">${API_INDEX.note}<br>Judge Console: <a href="${API_INDEX.judgeConsole}">${API_INDEX.judgeConsole}</a> · Docs: <a href="${API_INDEX.docs}">${API_INDEX.docs}</a></p>
+  <p class="note">${API_INDEX.note}<br>
+    <a href="${API_INDEX.interactiveDocs}">Interactive docs (Swagger UI)</a> ·
+    <a href="${API_INDEX.openApiSpec}">OpenAPI spec (JSON)</a> ·
+    <a href="${API_INDEX.judgeConsole}">Judge Console</a> ·
+    <a href="${API_INDEX.repo}">Repo</a>
+  </p>
   <table>
     <tbody>${rows}</tbody>
   </table>
 </body></html>`;
+}
+
+// Custom Swagger UI shell — points at our own /openapi.json rather than swagger-ui-dist's
+// bundled index.html (which defaults to the Petstore demo spec). Assets are served statically
+// from the swagger-ui-dist package at this same /docs path, no CDN involved.
+export function swaggerDocsHtml() {
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>${API_INDEX.name} — API Docs</title>
+  <link rel="stylesheet" href="/docs/swagger-ui.css">
+  <link rel="icon" href="/docs/favicon-32x32.png">
+  <style>body { margin: 0; } .topbar { display: none; }</style>
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="/docs/swagger-ui-bundle.js"></script>
+  <script src="/docs/swagger-ui-standalone-preset.js"></script>
+  <script>
+    window.onload = () => {
+      window.ui = SwaggerUIBundle({
+        url: '/openapi.json',
+        dom_id: '#swagger-ui',
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+        layout: 'StandaloneLayout',
+      });
+    };
+  </script>
+</body>
+</html>`;
 }
