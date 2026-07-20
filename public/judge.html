@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Kazoku Pulse — Judge Console</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --border: #e2e5ea;
+    --accent: #2563eb;
+    --accent-text: #ffffff;
+    --danger: #dc2626;
+    --ok: #16a34a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --card: #171a21;
+      --text: #e6e8eb;
+      --muted: #9aa1ac;
+      --border: #2a2e37;
+      --accent: #3b82f6;
+      --accent-text: #0b1020;
+      --danger: #f87171;
+      --ok: #4ade80;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; }
+  h1 { font-size: 1.4rem; margin: 0 0 4px; }
+  .subtitle { color: var(--muted); margin: 0 0 24px; font-size: 0.9rem; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px;
+    margin-bottom: 16px;
+  }
+  .card h2 { font-size: 0.95rem; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  button {
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 600;
+    padding: 14px 16px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--accent);
+    color: var(--accent-text);
+    cursor: pointer;
+    transition: opacity 0.15s;
+  }
+  button:hover { opacity: 0.88; }
+  button:active { opacity: 0.7; }
+  button.secondary { background: transparent; color: var(--text); }
+  button.danger { background: var(--danger); color: #fff; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+  input, select {
+    font: inherit;
+    padding: 10px 12px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    flex: 1;
+    min-width: 160px;
+  }
+  label { font-size: 0.8rem; color: var(--muted); display: block; margin-bottom: 4px; }
+  a { color: var(--accent); }
+  .status-line { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
+  .status-line:last-child { border-bottom: none; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+  #log {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.78rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    height: 160px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Kazoku Pulse — Judge Console</h1>
+  <p class="subtitle">Drive the demo yourself. Actions here call the same API the Mendix apps poll — everyone watching sees the same state.</p>
+
+  <div class="card">
+    <h2>Session</h2>
+    <div class="row">
+      <div>
+        <label for="family">Family</label>
+        <select id="family">
+          <option value="yoshiko-001">yoshiko-001 (shared)</option>
+          <option value="yoshiko-002">yoshiko-002 (clean run)</option>
+        </select>
+      </div>
+      <div>
+        <label for="apiBase">API base</label>
+        <input id="apiBase" placeholder="same origin" />
+      </div>
+      <div>
+        <label for="judgeKey">Judge key (if required)</label>
+        <input id="judgeKey" placeholder="optional" />
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Scenarios</h2>
+    <div class="grid">
+      <button id="btn-wandering">Start wandering scenario</button>
+      <button id="btn-false-alarm" class="secondary">Trigger false-alarm (charger-day)</button>
+      <button id="btn-care-reply" class="secondary">Simulate care reply now</button>
+      <button id="btn-reset" class="danger">Reset demo</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Live status</h2>
+    <div class="status-line"><span>Active incidents</span><span id="stat-incidents">—</span></div>
+    <div class="status-line"><span>Latest payout</span><span id="stat-payout">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Apps</h2>
+    <div class="status-line"><span>Parent app (Sakura)</span><a id="link-parent" href="#" target="_blank" rel="noopener">configure via ?parentApp=</a></div>
+    <div class="status-line"><span>Adult Child app (Yoshiko)</span><a id="link-child" href="#" target="_blank" rel="noopener">configure via ?childApp=</a></div>
+  </div>
+
+  <div class="card">
+    <h2>Activity log</h2>
+    <div id="log"></div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const qs = new URLSearchParams(location.search);
+  const els = {
+    family: document.getElementById('family'),
+    apiBase: document.getElementById('apiBase'),
+    judgeKey: document.getElementById('judgeKey'),
+    incidents: document.getElementById('stat-incidents'),
+    payout: document.getElementById('stat-payout'),
+    linkParent: document.getElementById('link-parent'),
+    linkChild: document.getElementById('link-child'),
+    log: document.getElementById('log'),
+  };
+
+  els.family.value = qs.get('family') || localStorage.getItem('kp_family') || 'yoshiko-001';
+  els.apiBase.value = qs.get('apiBase') || localStorage.getItem('kp_apiBase') || '';
+  els.judgeKey.value = qs.get('judgeKey') || localStorage.getItem('kp_judgeKey') || '';
+
+  const parentApp = qs.get('parentApp') || localStorage.getItem('kp_parentApp');
+  const childApp = qs.get('childApp') || localStorage.getItem('kp_childApp');
+  if (parentApp) { els.linkParent.href = parentApp; els.linkParent.textContent = parentApp; }
+  if (childApp) { els.linkChild.href = childApp; els.linkChild.textContent = childApp; }
+
+  [els.family, els.apiBase, els.judgeKey].forEach((el) =>
+    el.addEventListener('change', () => {
+      localStorage.setItem('kp_family', els.family.value);
+      localStorage.setItem('kp_apiBase', els.apiBase.value);
+      localStorage.setItem('kp_judgeKey', els.judgeKey.value);
+    })
+  );
+
+  function log(msg) {
+    const ts = new Date().toLocaleTimeString();
+    els.log.textContent = `[${ts}] ${msg}\n` + els.log.textContent;
+  }
+
+  function apiBase() {
+    return els.apiBase.value.replace(/\/$/, '') || '';
+  }
+
+  async function callDemo(path, body) {
+    const url = apiBase() + path;
+    const headers = { 'content-type': 'application/json' };
+    if (els.judgeKey.value) headers['x-judge-key'] = els.judgeKey.value;
+    try {
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body || {}) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        log(`✗ ${path} -> ${res.status} ${JSON.stringify(data)}`);
+      } else {
+        log(`✓ ${path} -> ${JSON.stringify(data)}`);
+      }
+      return data;
+    } catch (e) {
+      log(`✗ ${path} -> network error: ${e.message}`);
+    }
+  }
+
+  async function refreshStatus() {
+    const headers = {};
+    if (els.judgeKey.value) headers['x-judge-key'] = els.judgeKey.value;
+    try {
+      const res = await fetch(`${apiBase()}/v1/demo/status?parentId=${encodeURIComponent(els.family.value)}`, { headers });
+      if (!res.ok) return;
+      const data = await res.json();
+      els.incidents.textContent = data.activeIncidents;
+      if (data.latestPayout) {
+        els.payout.innerHTML = `<a href="${data.latestPayout.deepLink}" target="_blank" rel="noopener">${data.latestPayout.title}</a>`;
+      } else {
+        els.payout.textContent = 'none yet';
+      }
+    } catch (e) {
+      /* silent — polling */
+    }
+  }
+
+  document.getElementById('btn-wandering').addEventListener('click', () =>
+    callDemo('/v1/demo/scenario/wandering', { parentId: els.family.value })
+  );
+  document.getElementById('btn-false-alarm').addEventListener('click', () =>
+    callDemo('/v1/demo/scenario/false-alarm', { parentId: els.family.value })
+  );
+  document.getElementById('btn-care-reply').addEventListener('click', () =>
+    callDemo('/v1/demo/scenario/care-reply', { parentId: els.family.value })
+  );
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    if (confirm('Reset all demo data for every judge? This cannot be undone.')) {
+      callDemo('/v1/demo/reset', {});
+    }
+  });
+
+  refreshStatus();
+  setInterval(refreshStatus, 2000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,101 @@
+import 'dotenv/config';
+import express from 'express';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { openDb, seedIfEmpty, resetDb } from './db.js';
+import { apiKeyAuth, judgeKeyAuth } from './auth.js';
+import { healthkitRouter } from './routes/healthkit.js';
+import { frsRouter } from './routes/frs.js';
+import { incidentsRouter, startGeofenceTick } from './routes/incidents.js';
+import { telemetryRouter } from './routes/telemetry.js';
+import { parentRouter } from './routes/parent.js';
+import { eventsRouter } from './routes/events.js';
+import { dispatchRouter, uberWebhookRouter } from './routes/dispatch.js';
+import { careRouter } from './routes/care.js';
+import { paymentsRouter } from './routes/payments.js';
+import { attestationRouter } from './routes/attestation.js';
+import { settingsRouter } from './routes/settings.js';
+import { demoRouter } from './routes/demo.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+export function createApp(db, deps = {}) {
+  const app = express();
+  app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+  app.use(
+    express.json({
+      limit: '256kb',
+      verify: (req, res, buf) => {
+        req.rawBody = buf;
+      },
+    })
+  );
+  app.use(
+    rateLimit({
+      windowMs: 60 * 1000,
+      limit: parseInt(process.env.RATE_LIMIT_PER_MIN, 10) || 120,
+      standardHeaders: true,
+      legacyHeaders: false,
+    })
+  );
+
+  app.get('/health', (req, res) => res.json({ ok: true, ts: Date.now() }));
+  app.use('/judge', express.static(path.join(__dirname, '..', 'public')));
+
+  // Provider webhook: authenticated by HMAC signature, not x-api-key (a real Uber callback
+  // would never carry our internal API key) — must be mounted before apiKeyAuth.
+  app.use(uberWebhookRouter(db));
+
+  // Judge Console actions: the console is a plain static page with no server-side secret
+  // holder, so it can't carry x-api-key (which must never reach a browser, per the security
+  // floor). Gated instead by the optional JUDGE_KEY, enforced only if that env var is set.
+  app.use(judgeKeyAuth, demoRouter(db, deps.demo));
+
+  app.use(apiKeyAuth);
+
+  app.use(healthkitRouter(db));
+  app.use(frsRouter(db));
+  app.use(incidentsRouter(db));
+  app.use(telemetryRouter(db));
+  app.use(parentRouter(db));
+  app.use(eventsRouter(db));
+  app.use(dispatchRouter(db));
+  app.use(careRouter(db, deps.care));
+  app.use(paymentsRouter(db, deps.payments));
+  app.use(attestationRouter(db, deps.attestation));
+  app.use(settingsRouter(db));
+
+  app.use((err, req, res, next) => {
+    console.error(err);
+    res.status(500).json({ error: 'INTERNAL_ERROR', message: err.message });
+  });
+
+  return app;
+}
+
+if (process.argv[1] === fileURLToPath(import.meta.url)) {
+  const db = openDb();
+  if (process.env.SEED_ON_BOOT === '1') {
+    resetDb(db);
+  } else {
+    seedIfEmpty(db);
+  }
+  const app = createApp(db);
+  const port = parseInt(process.env.PORT, 10) || 3000;
+  app.listen(port, () => {
+    console.log(`kazoku-demo listening on :${port}`);
+  });
+
+  if (parseInt(process.env.AUTO_RESET_MINUTES, 10) > 0) {
+    const ms = parseInt(process.env.AUTO_RESET_MINUTES, 10) * 60 * 1000;
+    setInterval(() => {
+      console.log('auto-reset: reseeding demo data');
+      resetDb(db);
+    }, ms).unref();
+  }
+
+  startGeofenceTick(db);
+}

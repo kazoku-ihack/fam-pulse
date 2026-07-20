@@ -1,0 +1,370 @@
+import Database from 'better-sqlite3';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { computeFRS } from './frs.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'kazoku.sqlite');
+
+export const HOME = { lat: 35.6595, lng: 139.7005 };
+export const DEFAULT_PARENT_ID = 'yoshiko-001';
+export const SECOND_PARENT_ID = 'yoshiko-002';
+
+export function openDb(dbPath = process.env.DB_PATH || DEFAULT_DB_PATH) {
+  if (dbPath !== ':memory:') {
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  }
+  const db = new Database(dbPath);
+  db.pragma('journal_mode = WAL');
+  migrate(db);
+  return db;
+}
+
+function migrate(db) {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS metrics (
+      parentId TEXT NOT NULL,
+      date TEXT NOT NULL,
+      dailySteps INTEGER,
+      sleepHours REAL,
+      heartRateAvg INTEGER,
+      heartRateResting INTEGER,
+      ts INTEGER,
+      PRIMARY KEY (parentId, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS frs_history (
+      parentId TEXT NOT NULL,
+      date TEXT NOT NULL,
+      score INTEGER,
+      factors_json TEXT,
+      PRIMARY KEY (parentId, date)
+    );
+
+    CREATE TABLE IF NOT EXISTS frs_reviews (
+      id TEXT PRIMARY KEY,
+      parentId TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      conditionType TEXT NOT NULL,
+      conditionKey TEXT NOT NULL,
+      decision TEXT NOT NULL,
+      confidence REAL,
+      category TEXT,
+      reasoning TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS incidents (
+      id TEXT PRIMARY KEY,
+      parentId TEXT NOT NULL,
+      type TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      active INTEGER NOT NULL DEFAULT 1,
+      lat REAL,
+      lng REAL,
+      exitTs INTEGER,
+      dwellMin REAL,
+      escalationDueTs INTEGER,
+      pickupConfirmed INTEGER DEFAULT 0,
+      dropoffConfirmed INTEGER DEFAULT 0,
+      timeline_json TEXT,
+      pt01Eligible INTEGER DEFAULT 0,
+      triage_json TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS dispatches (
+      id TEXT PRIMARY KEY,
+      incidentId TEXT NOT NULL,
+      status TEXT NOT NULL,
+      driver_json TEXT,
+      etaMin REAL,
+      lat REAL,
+      lng REAL,
+      retryCount INTEGER DEFAULT 0,
+      idempotencyKey TEXT,
+      createdTs INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS care_requests (
+      id TEXT PRIMARY KEY,
+      parentId TEXT NOT NULL,
+      needSummary TEXT,
+      windows_json TEXT,
+      channelStatus_json TEXT,
+      slaDueTs INTEGER,
+      plan_json TEXT,
+      status TEXT NOT NULL DEFAULT 'pending'
+    );
+
+    CREATE TABLE IF NOT EXISTS settlements (
+      id TEXT PRIMARY KEY,
+      parentId TEXT NOT NULL,
+      period TEXT NOT NULL,
+      lines_json TEXT NOT NULL,
+      pt03Credit REAL DEFAULT 0
+    );
+
+    CREATE TABLE IF NOT EXISTS attestations (
+      id TEXT PRIMARY KEY,
+      policyId TEXT,
+      triggerCode TEXT,
+      payoutAmount REAL,
+      recipient TEXT,
+      timestamp INTEGER,
+      nonce TEXT,
+      payloadHash TEXT,
+      signature TEXT,
+      signerAddress TEXT,
+      txHash TEXT,
+      status TEXT,
+      source TEXT,
+      raterRef TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS settings (
+      parentId TEXT PRIMARY KEY,
+      singleton_json TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS wallets (
+      name TEXT PRIMARY KEY,
+      address TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      parentId TEXT,
+      type TEXT NOT NULL,
+      ts INTEGER NOT NULL,
+      title TEXT NOT NULL,
+      deepLink TEXT,
+      refId TEXT
+    );
+  `);
+}
+
+export function appendEvent(db, { parentId = null, type, title, deepLink = null, refId = null, ts = Date.now() }) {
+  db.prepare(
+    `INSERT INTO events (parentId, type, ts, title, deepLink, refId) VALUES (?,?,?,?,?,?)`
+  ).run(parentId, type, ts, title, deepLink, refId);
+}
+
+export function isEmpty(db) {
+  const row = db.prepare('SELECT COUNT(*) AS c FROM metrics').get();
+  return row.c === 0;
+}
+
+// Wipes demo data but never touches `wallets` (chain contract addresses persist across resets,
+// same for on-chain nonces which live in the contract, not this DB).
+const WIPE_TABLES = [
+  'metrics',
+  'frs_history',
+  'frs_reviews',
+  'incidents',
+  'dispatches',
+  'care_requests',
+  'settlements',
+  'attestations',
+  'settings',
+  'events',
+];
+
+export function wipe(db) {
+  const txn = db.transaction(() => {
+    for (const t of WIPE_TABLES) db.prepare(`DELETE FROM ${t}`).run();
+  });
+  txn();
+}
+
+function defaultSettings(parentId, overrides = {}) {
+  return {
+    parentId,
+    pairingStatus: 'connected',
+    sharingEnabled: true,
+    homeLatLng: { ...HOME },
+    geofenceRadius: 500,
+    monitoringActive: true,
+    knownSafePlaces: [
+      { name: 'Sunrise Supermarket', lat: 35.6612, lng: 139.7031 },
+      { name: "Yoshiko's Clinic", lat: 35.658, lng: 139.6988 },
+    ],
+    chips: {
+      careNetwork: 'auto',
+      careChannel: 'auto',
+      triageMode: 'auto',
+      frsReviewMode: 'auto',
+    },
+    ...overrides,
+  };
+}
+
+function seedMetricsFor(db, parentId, days, baseDate) {
+  const rows = [];
+  for (let i = days.length - 1; i >= 0; i--) {
+    const d = new Date(baseDate);
+    d.setUTCDate(d.getUTCDate() - i);
+    const date = d.toISOString().slice(0, 10);
+    rows.push({ date, ...days[days.length - 1 - i] });
+  }
+  const insert = db.prepare(
+    `INSERT INTO metrics (parentId, date, dailySteps, sleepHours, heartRateAvg, heartRateResting, ts)
+     VALUES (@parentId, @date, @dailySteps, @sleepHours, @heartRateAvg, @heartRateResting, @ts)`
+  );
+  const insertFrs = db.prepare(
+    `INSERT INTO frs_history (parentId, date, score, factors_json) VALUES (?,?,?,?)`
+  );
+  const historySteps = [];
+  const txn = db.transaction(() => {
+    for (const row of rows) {
+      insert.run({ parentId, ts: Date.now(), ...row });
+      const frs = computeFRS({ today: row, historySteps: [...historySteps] });
+      insertFrs.run(parentId, row.date, frs.score, JSON.stringify(frs.factors));
+      historySteps.push(row.dailySteps);
+    }
+  });
+  txn();
+}
+
+export function seed(db) {
+  const today = new Date();
+
+  // yoshiko-001: full 7-day history, today deliberately shy of a perfect score (~low 80s)
+  // so judges see FRS movement rather than a maxed-out demo number.
+  seedMetricsFor(
+    db,
+    DEFAULT_PARENT_ID,
+    [
+      { dailySteps: 3400, sleepHours: 6.2, heartRateAvg: 75, heartRateResting: 70 },
+      { dailySteps: 5200, sleepHours: 7.8, heartRateAvg: 74, heartRateResting: 66 },
+      { dailySteps: 4600, sleepHours: 7.1, heartRateAvg: 76, heartRateResting: 68 },
+      { dailySteps: 3900, sleepHours: 6.9, heartRateAvg: 73, heartRateResting: 65 },
+      { dailySteps: 4800, sleepHours: 7.4, heartRateAvg: 75, heartRateResting: 67 },
+      { dailySteps: 4100, sleepHours: 6.6, heartRateAvg: 72, heartRateResting: 64 },
+      { dailySteps: 2900, sleepHours: 6.3, heartRateAvg: 82, heartRateResting: 78 }, // today
+    ],
+    today
+  );
+
+  // yoshiko-002: sparse, partial history — a "clean" second family for a fresh judge run.
+  seedMetricsFor(
+    db,
+    SECOND_PARENT_ID,
+    [
+      { dailySteps: 5400, sleepHours: 7.6, heartRateAvg: 70, heartRateResting: 62 },
+      { dailySteps: 6100, sleepHours: 7.9, heartRateAvg: 69, heartRateResting: 60 },
+    ],
+    today
+  );
+
+  const upsertSettings = db.prepare(
+    `INSERT INTO settings (parentId, singleton_json) VALUES (?, ?)`
+  );
+  upsertSettings.run(DEFAULT_PARENT_ID, JSON.stringify(defaultSettings(DEFAULT_PARENT_ID)));
+  upsertSettings.run(
+    SECOND_PARENT_ID,
+    JSON.stringify(
+      defaultSettings(SECOND_PARENT_ID, {
+        homeLatLng: { lat: 35.71, lng: 139.81 },
+      })
+    )
+  );
+
+  const juneLines = [
+    {
+      lineId: 'L1',
+      type: 'visit',
+      description: 'Home-care visit — Kenji T., 2026-06-05',
+      amount: 3000,
+      attested: true,
+      disputed: false,
+      ts: Date.UTC(2026, 5, 5),
+    },
+    {
+      lineId: 'L2',
+      type: 'visit',
+      description: 'Home-care visit — Aiko M., 2026-06-12',
+      amount: 3000,
+      attested: true,
+      disputed: false,
+      ts: Date.UTC(2026, 5, 12),
+    },
+    {
+      lineId: 'L3',
+      type: 'visit',
+      description: 'Home-care visit — Kenji T., 2026-06-20',
+      amount: 3000,
+      attested: true,
+      disputed: false,
+      ts: Date.UTC(2026, 5, 20),
+    },
+    {
+      lineId: 'L4',
+      type: 'reward',
+      description: 'Wandering-response reward (deferred)',
+      amount: 3000,
+      attested: false,
+      disputed: false,
+      ts: Date.UTC(2026, 5, 28),
+    },
+  ];
+  db.prepare(
+    `INSERT INTO settlements (id, parentId, period, lines_json, pt03Credit) VALUES (?,?,?,?,?)`
+  ).run(
+    'settlement-2026-06',
+    DEFAULT_PARENT_ID,
+    '2026-06',
+    JSON.stringify(juneLines),
+    9000
+  );
+
+  db.prepare(`INSERT OR IGNORE INTO wallets (name, address) VALUES (?, ?)`).run(
+    'payoutPool',
+    process.env.PAYOUT_ADDR || null
+  );
+  db.prepare(`INSERT OR IGNORE INTO wallets (name, address) VALUES (?, ?)`).run(
+    'sakura',
+    process.env.SAKURA_WALLET_ADDR || null
+  );
+
+  appendEvent(db, {
+    parentId: DEFAULT_PARENT_ID,
+    type: 'settlement',
+    title: 'June settlement ready for review',
+    deepLink: '/v1/settlement/current',
+    refId: 'settlement-2026-06',
+  });
+}
+
+export function seedIfEmpty(db) {
+  if (isEmpty(db)) seed(db);
+}
+
+export function resetDb(db) {
+  wipe(db);
+  seed(db);
+}
+
+export function getParentId(req) {
+  return req.query.parentId || req.body?.parentId || DEFAULT_PARENT_ID;
+}
+
+export function getSettings(db, parentId) {
+  const row = db.prepare('SELECT singleton_json FROM settings WHERE parentId = ?').get(parentId);
+  if (!row) {
+    const fresh = defaultSettings(parentId);
+    db.prepare(`INSERT INTO settings (parentId, singleton_json) VALUES (?, ?)`).run(
+      parentId,
+      JSON.stringify(fresh)
+    );
+    return fresh;
+  }
+  return JSON.parse(row.singleton_json);
+}
+
+export function saveSettings(db, parentId, settings) {
+  db.prepare(
+    `INSERT INTO settings (parentId, singleton_json) VALUES (?, ?)
+     ON CONFLICT(parentId) DO UPDATE SET singleton_json = excluded.singleton_json`
+  ).run(parentId, JSON.stringify(settings));
+}
