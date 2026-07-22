@@ -21,7 +21,7 @@ test('PATCH /v1/consent sharingEnabled:false closes telemetry to a stub frame', 
   assert.equal(patch.body.sharingEnabled, false);
 
   const telemetry = await request(app).get('/v1/telemetry').set('x-api-key', API_KEY);
-  assert.deepEqual(telemetry.body, { sharingEnabled: false });
+  assert.deepEqual(telemetry.body, { sharingEnabled: false, configVersion: 1 });
 
   const status = await request(app).get('/v1/parent/status').set('x-api-key', API_KEY);
   assert.equal(status.body.sharingEnabled, false);
@@ -67,7 +67,7 @@ test('batchTransfer server-side re-derives exclusions (disputed ∪ unattested) 
     .post('/v1/jpyc/batchTransfer')
     .set('x-api-key', API_KEY)
     .send({ settlementId: 'settlement-2026-06' });
-  // No PT-03 attestation exists yet for this settlement -> must be rejected regardless of lines.
+  // No PT-06 (settlement) attestation exists yet for this settlement -> rejected regardless of lines.
   assert.equal(res.status, 403);
   assert.equal(res.body.error, 'ATTESTATION_REQUIRED');
 });

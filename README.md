@@ -14,9 +14,9 @@ exercised offline) · **[STUB]** a simulator behind the real interface.
 ```bash
 npm install
 cp .env.example .env        # edit API_KEY at minimum
-npm test                    # 77 offline tests, no credentials needed
+npm test                    # 88 offline tests, no credentials needed
 npm run compile              # compiles src/chain/contracts
-npm run test:chain           # 5 tests against a local Hardhat node
+npm run test:chain           # 5 tests against a local Hardhat node (MimamorParametric)
 npm start                    # boots on :3000, seeds SQLite on first run
 ```
 
@@ -28,14 +28,20 @@ depends on a live network call. Flip on real credentials in `.env` to light up:
 | Env var | Unlocks |
 |---|---|
 | `ANTHROPIC_API_KEY` | Real Claude calls for wandering triage, FRS review, care channel selection, and care-reply parsing. Unset → each module fails safe (see below) and demo scenarios use injected/canned responses instead. |
-| `SIGNER_PRIVATE_KEY` | Real ethers signing of attestation payloads (works offline, no funded key needed — pure crypto). Unset → `503 SIGNER_NOT_CONFIGURED` on `/v1/attestation/trigger`. |
-| `FUJI_RPC` + `JPYC_ADDR` + `PAYOUT_ADDR` | Real on-chain reads/writes (`/v1/wallet/balance`, `/v1/jpyc/transfer`, `/v1/jpyc/batchTransfer`). Deploy first via `chain/deploy.js`. Unset → `503 CHAIN_NOT_CONFIGURED` on transfer, `configured:false` on balance. |
+| `STUB_SIGNER_PRIVATE_KEY` | Offline attestation signing in `ATTESTATION_MODE=stub` (works with no funded key — pure crypto) **and** doubles as the on-chain relayer wallet that submits `submitTrigger` transactions in both modes (needs Fuji gas funds for that half only). Unset → `503 SIGNER_NOT_CONFIGURED` on signing, `503 CHAIN_NOT_CONFIGURED` on transfer. There is no separate "signing key" in the service in protosure mode — the Protosure rater signs; this key only relays. |
+| `REGISTERED_SIGNER` + `PROTOSURE_RATER_URL` + `PROTOSURE_API_TOKEN` | Real Protosure rater signing when `ATTESTATION_MODE=protosure`. The rater's response is only accepted if `calculation.signer` matches `REGISTERED_SIGNER` and the signature is 65 bytes. Unreachable/invalid → falls back per `ATTESTATION_FALLBACK`, stamping `source:"stub-fallback"` (surfaced to judges, not hidden). |
+| `FUJI_RPC` + `JPYC_ADDR` + `PAYOUT_ADDR` + `CHAIN_ID` | Real on-chain reads/writes (`/v1/wallet/balance`, `/v1/jpyc/transfer`, `/v1/jpyc/batchTransfer`). Deploy first via `chain/deploy.js`. Unset → `503 CHAIN_NOT_CONFIGURED` on transfer, `configured:false` on balance. |
 | `SMTP_URL` / `IMAP_URL` | Real care-request email send / reply polling. Unset → logged only; use `SIM_CARE_REPLY=1` or the Judge Console's "Simulate care reply now" button to rehearse offline. |
-| `PROTOSURE_BASE_URL` + `PROTOSURE_API_TOKEN` | Real Protosure API Rater validation when `ATTESTATION_MODE=protosure`. Unreachable → falls back per `ATTESTATION_FALLBACK`, stamping `source:"stub-fallback"` on the resulting attestation (surfaced to judges, not hidden). |
 
 **Claude output never gates a payout.** `src/routes/attestation.js`, `src/routes/payments.js`,
 `src/protosure/*`, and `src/chain/*` import nothing from `src/claude/*`. Triage and FRS review
 shape *alerts and severity only*; every void or downgrade is an auditable row, never a deletion.
+
+**Rule validation vs. signing are separate concerns.** `src/attestation-rules.js` validates the
+fixed schedule (PT-01 ¥3,000 / PT-02 ¥30,000 / PT-03 ¥20,000 / PT-04 ¥10,000 / PT-05 ¥1,000
+fraud-reward — PT-06 settlement has no fixed amount), the PT-01 monthly cool-down, and monthly
+cap headroom (`cap_ledger`) — identically regardless of `ATTESTATION_MODE`. The rater (or the
+offline stub) *only signs*; it never decides whether a payout is allowed.
 
 ## Project layout
 
@@ -98,17 +104,20 @@ curl -s -X PATCH localhost:3000/v1/carePlan/$CARE_ID -H "x-api-key: $API_KEY" -H
 ```
 
 **Scene 7 — Attestation + on-chain payout.** REAL-LITE: signing works offline; the actual
-transfer needs `chain/deploy.js` run once against Fuji first.
+transfer needs `chain/deploy.js` run once against Fuji first. `triggerRef` (the on-chain replay
+key) defaults to `incidentId` when given, else a random UUID — pass a real incident/settlement id
+so a re-run of the *same* real-world event can't double-pay.
 ```bash
 curl -s -X POST localhost:3000/v1/attestation/trigger -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"policyId":"policy-yoshiko-001","triggerCode":"PT-02","recipient":"0xYourFujiWalletHere"}'
+  -d '{"policyId":"KP-2026-001","triggerCode":"PT-02","recipient":"0xYourFujiWalletHere","incidentId":"incident-abc"}'
 # ATTESTATION_ID=<id from above>
 curl -s -X POST localhost:3000/v1/jpyc/transfer -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
   -d "{\"attestationId\":\"$ATTESTATION_ID\"}"
 ```
 
-**Scene 8 — Settlement review.** Flag a line as disputed, batch-attest the rest, and confirm the
-server (not the client) decides what's excluded from the transfer.
+**Scene 8 — Settlement review.** Flag a line as disputed, batch-attest the rest (signed as
+`PT-06`, the settlement trigger — its amount is the real netted credit, not a fixed schedule
+value), and confirm the server (not the client) decides what's excluded from the transfer.
 ```bash
 curl -s -X PATCH localhost:3000/v1/settlement/settlement-2026-06/line/L2 -H "x-api-key: $API_KEY" -H "Content-Type: application/json" -d '{"disputed":true}'
 curl -s -X POST localhost:3000/v1/attestation/settlement/batch -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
@@ -131,12 +140,19 @@ deployed Mendix apps).
 
 ## Deploying the chain contracts
 
-Not run automatically. Once you have a funded Fuji deployer key:
+Not run automatically. Requires `DEPLOYER_PRIVATE_KEY` (funded from
+[the Fuji faucet](https://core.app/tools/testnet-faucet/)) and `REGISTERED_SIGNER` (the
+Protosure rater's signing address — for stub-only rehearsal, use your `STUB_SIGNER_PRIVATE_KEY`
+wallet's address here too) in `.env`:
 ```bash
 npx hardhat run src/chain/deploy.js --network fuji
 ```
-Writes `.env.chain` with `JPYC_ADDR` / `PAYOUT_ADDR` / `SAKURA_WALLET_ADDR` — copy those into
-your real `.env` (or your hosting provider's env vars).
+This deploys `DemoJPYC` (whole-JPY units, `decimals()==0`) and `MimamorParametric`, registers
+`REGISTERED_SIGNER` (plus `STUB_SIGNER_PRIVATE_KEY`'s address for rehearsal payouts, if set),
+sets the monthly cap per coverage code, and mints the funding pool. Writes `.env.chain` with
+`JPYC_ADDR` / `PAYOUT_ADDR` / `SAKURA_WALLET_ADDR` / `REGISTERED_SIGNER` — copy those into your
+real `.env` (or your hosting provider's env vars). Verify with `GET /v1/attestation/signer/current`
+— `isRegisteredOnChain` should read `true`.
 
 ## Publishing
 

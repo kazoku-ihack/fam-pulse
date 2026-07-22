@@ -10,7 +10,7 @@ export function telemetryRouter(db) {
     const settings = getSettings(db, parentId);
 
     if (!settings.sharingEnabled) {
-      return res.json({ sharingEnabled: false });
+      return res.json({ sharingEnabled: false, configVersion: settings.configVersion });
     }
 
     const date = new Date().toISOString().slice(0, 10);
@@ -26,6 +26,8 @@ export function telemetryRouter(db) {
       sleepHours: metricsRow?.sleepHours ?? null,
       lastHeartRate: metricsRow?.heartRateAvg ?? null,
       sharingEnabled: true,
+      // The Parent app watches this and re-fetches /v1/policy/monitoringConfig on change.
+      configVersion: settings.configVersion,
       ts: Date.now(),
     });
   });

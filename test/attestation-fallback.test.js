@@ -20,27 +20,89 @@ function withEnv(vars, run) {
   });
 }
 
-function withFailingFetch(run) {
+function withFetch(impl, run) {
   const original = globalThis.fetch;
-  globalThis.fetch = async () => {
-    throw new Error('ECONNREFUSED');
-  };
+  globalThis.fetch = impl;
   return run().finally(() => {
     globalThis.fetch = original;
   });
 }
 
+const failingFetch = async () => {
+  throw new Error('ECONNREFUSED');
+};
+
+test('protosure mode: a successful rater response (golden-vector fixture shape) is accepted, source:"protosure"', async () => {
+  await withEnv(
+    { ATTESTATION_MODE: 'protosure', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    () =>
+      withFetch(
+        async () => ({
+          ok: true,
+          json: async () => ({
+            calculation: {
+              payload_hash: '0xc1b318da13d253576a3a51eb16289aa9ab31141cd8d3acd003049c087a77fd4d',
+              signature: '0x' + '11'.repeat(65),
+              signer: process.env.REGISTERED_SIGNER,
+            },
+          }),
+        }),
+        async () => {
+          const chain = makeFakeChain();
+          const { app } = setupApp({ attestation: { chain } });
+          const res = await request(app)
+            .post('/v1/attestation/trigger')
+            .set('x-api-key', API_KEY)
+            .send({ policyId: 'KP-2026-001', triggerCode: 'PT-02', recipient: RECIPIENT });
+          assert.equal(res.status, 201);
+          assert.equal(res.body.source, 'protosure');
+          assert.equal(res.body.payloadHash, '0xc1b318da13d253576a3a51eb16289aa9ab31141cd8d3acd003049c087a77fd4d');
+          assert.equal(res.body.signer.toLowerCase(), process.env.REGISTERED_SIGNER);
+        }
+      )
+  );
+});
+
+test('protosure mode: a response signed by an unregistered signer is treated as unavailable and falls back', async () => {
+  await withEnv(
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    () =>
+      withFetch(
+        async () => ({
+          ok: true,
+          json: async () => ({
+            calculation: {
+              payload_hash: '0xdeadbeef',
+              signature: '0x' + '11'.repeat(65),
+              signer: '0x0000000000000000000000000000000000dEaD', // not REGISTERED_SIGNER
+            },
+          }),
+        }),
+        async () => {
+          const chain = makeFakeChain();
+          const { app } = setupApp({ attestation: { chain } });
+          const res = await request(app)
+            .post('/v1/attestation/trigger')
+            .set('x-api-key', API_KEY)
+            .send({ policyId: 'KP-2026-001', triggerCode: 'PT-02', recipient: RECIPIENT });
+          assert.equal(res.status, 201);
+          assert.equal(res.body.source, 'stub-fallback');
+        }
+      )
+  );
+});
+
 test('protosure mode + ATTESTATION_FALLBACK=stub: rater unreachable falls back to local stub, source stamped', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_BASE_URL: 'https://sandbox.test', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
     () =>
-      withFailingFetch(async () => {
+      withFetch(failingFetch, async () => {
         const chain = makeFakeChain();
         const { app } = setupApp({ attestation: { chain } });
         const res = await request(app)
           .post('/v1/attestation/trigger')
           .set('x-api-key', API_KEY)
-          .send({ policyId: 'p1', triggerCode: 'PT-02', recipient: RECIPIENT });
+          .send({ policyId: 'KP-2026-001', triggerCode: 'PT-02', recipient: RECIPIENT });
         assert.equal(res.status, 201);
         assert.equal(res.body.source, 'stub-fallback');
       })
@@ -49,15 +111,15 @@ test('protosure mode + ATTESTATION_FALLBACK=stub: rater unreachable falls back t
 
 test('protosure mode + ATTESTATION_FALLBACK=fail: rater unreachable rejects the attestation', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'fail', PROTOSURE_BASE_URL: 'https://sandbox.test', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'fail', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
     () =>
-      withFailingFetch(async () => {
+      withFetch(failingFetch, async () => {
         const chain = makeFakeChain();
         const { app } = setupApp({ attestation: { chain } });
         const res = await request(app)
           .post('/v1/attestation/trigger')
           .set('x-api-key', API_KEY)
-          .send({ policyId: 'p1', triggerCode: 'PT-02', recipient: RECIPIENT });
+          .send({ policyId: 'KP-2026-001', triggerCode: 'PT-02', recipient: RECIPIENT });
         assert.equal(res.status, 422);
         assert.equal(res.body.error, 'RATER_UNAVAILABLE');
       })

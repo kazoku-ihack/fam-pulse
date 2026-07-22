@@ -12,10 +12,10 @@ const trackers = new Map(); // parentId -> geofence tracker
 const TICK_MS = 2000;
 let tickHandle = null;
 
-function getTracker(parentId, home, radiusM) {
+function getTracker(parentId) {
   let t = trackers.get(parentId);
   if (!t) {
-    t = createGeofenceTracker({ home, radiusM });
+    t = createGeofenceTracker();
     trackers.set(parentId, t);
   }
   return t;
@@ -157,9 +157,11 @@ async function tickParent(db, parentId) {
   if (!settings.monitoringActive || !settings.sharingEnabled) return;
 
   const home = settings.homeLatLng;
-  const tracker = getTracker(parentId, home, settings.geofenceRadius);
+  const tracker = getTracker(parentId);
   const pos = currentPosition(parentId, home);
-  const event = tracker.ingest(pos, dwellThresholdMs());
+  // home/radius are read fresh every tick (never cached on the tracker), so a config change
+  // from PATCH /v1/policy/monitoringConfig takes effect on the very next tick.
+  const event = tracker.ingest(pos, home, settings.geofenceRadius, dwellThresholdMs());
 
   if (event.event === 'wandering') {
     const existing = db
@@ -167,6 +169,24 @@ async function tickParent(db, parentId) {
       .get(parentId);
     if (!existing) {
       await createWanderingIncident(db, parentId, settings, event);
+    }
+  } else if (event.event === 'inside' && event.resolvedByEnlargement) {
+    // The geo-fence radius was enlarged mid-dwell, not a genuine walk-home — close any active
+    // WANDERING incident with a distinct resolution note (a real walk-home is instead resolved
+    // via checkDropoff's GPS-match-to-home confirmation, a deliberate, higher-confidence signal).
+    const active = db
+      .prepare(`SELECT * FROM incidents WHERE parentId = ? AND type = 'WANDERING' AND active = 1`)
+      .get(parentId);
+    if (active) {
+      db.prepare('UPDATE incidents SET active = 0 WHERE id = ?').run(active.id);
+      addTimeline(db, active.id, { event: 'resolved', detail: 'geofence enlarged' });
+      appendEvent(db, {
+        parentId,
+        type: 'wandering',
+        title: 'Wandering alert resolved — geo-fence enlarged',
+        deepLink: `/v1/incidents/${active.id}`,
+        refId: active.id,
+      });
     }
   }
 

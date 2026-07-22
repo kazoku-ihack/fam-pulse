@@ -1,6 +1,21 @@
 import { Router } from 'express';
 import { getParentId } from '../db.js';
 
+// Documented set of event types appendEvent() is expected to use — not enforced at insert time
+// (appendEvent takes any string), but kept here as one source of truth for docs (src/openapi.js)
+// and for anyone adding a new event type to know where to register it.
+export const EVENT_TYPES = [
+  'wandering',
+  'sos',
+  'frs_dip',
+  'frs_void',
+  'visit_completed',
+  'payout',
+  'settlement',
+  'settings',
+  'geofence_updated',
+];
+
 export function eventsRouter(db) {
   const router = Router();
 

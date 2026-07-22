@@ -30,22 +30,32 @@ export function bearingCardinal(lat1, lng1, lat2, lng2) {
 const ACCURACY_LIMIT_M = 50;
 
 // One tracker instance per monitored subject. `ingest` is a pure state transition: it does not
-// read the clock itself — the caller supplies `sample.ts` and the current `dwellThresholdMs`,
-// which makes the dwell boundary fully deterministic and testable without real waiting.
-export function createGeofenceTracker({ home, radiusM = 500 }) {
+// read the clock itself, and it does not cache `home`/`radiusM` at construction time — both are
+// passed in on every call, so a config change (PATCH /v1/policy/monitoringConfig) takes effect
+// on the very next tick rather than only for trackers created after the change. The caller
+// supplies `sample.ts` and the current `dwellThresholdMs`, which makes the dwell boundary fully
+// deterministic and testable without real waiting.
+export function createGeofenceTracker() {
   let outsideSinceTs = null;
+  let lastRadiusM = null;
 
   return {
-    ingest(sample, dwellThresholdMs) {
+    ingest(sample, home, radiusM, dwellThresholdMs) {
       if (sample.accuracyM > ACCURACY_LIMIT_M) {
         return { event: 'excluded' };
       }
       const distanceM = distanceMeters(home.lat, home.lng, sample.lat, sample.lng);
       const outside = distanceM > radiusM;
+      const wasOutside = outsideSinceTs !== null;
+      const priorRadiusM = lastRadiusM;
+      lastRadiusM = radiusM;
 
       if (!outside) {
+        // Distinguish "radius was enlarged mid-dwell" from a genuine walk-home: only the
+        // former has the position still outside what the radius *used to be* a moment ago.
+        const resolvedByEnlargement = wasOutside && priorRadiusM != null && distanceM > priorRadiusM;
         outsideSinceTs = null;
-        return { event: 'inside', distanceM };
+        return { event: 'inside', distanceM, resolvedByEnlargement };
       }
 
       if (outsideSinceTs === null) outsideSinceTs = sample.ts;
@@ -64,6 +74,7 @@ export function createGeofenceTracker({ home, radiusM = 500 }) {
     },
     reset() {
       outsideSinceTs = null;
+      lastRadiusM = null;
     },
   };
 }

@@ -14,26 +14,26 @@ test('dwell boundary: 9/10/11 minutes (dwell > 10min required to trigger)', () =
     [11, true],
   ];
   for (const [minutes, expectWander] of cases) {
-    const tracker = createGeofenceTracker({ home, radiusM: 500 });
-    const first = tracker.ingest({ ...farAway, accuracyM: 10, ts: t0 }, threshold);
+    const tracker = createGeofenceTracker();
+    const first = tracker.ingest({ ...farAway, accuracyM: 10, ts: t0 }, home, 500, threshold);
     assert.equal(first.event, 'outside_pending');
-    const second = tracker.ingest({ ...farAway, accuracyM: 10, ts: t0 + minutes * 60 * 1000 }, threshold);
+    const second = tracker.ingest({ ...farAway, accuracyM: 10, ts: t0 + minutes * 60 * 1000 }, home, 500, threshold);
     assert.equal(second.event === 'wandering', expectWander, `minutes=${minutes} expected wander=${expectWander}`);
   }
 });
 
 test('low-accuracy samples (>50m) are excluded', () => {
-  const tracker = createGeofenceTracker({ home, radiusM: 500 });
-  const r = tracker.ingest({ ...farAway, accuracyM: 75, ts: 1 }, 1000);
+  const tracker = createGeofenceTracker();
+  const r = tracker.ingest({ ...farAway, accuracyM: 75, ts: 1 }, home, 500, 1000);
   assert.equal(r.event, 'excluded');
 });
 
 test('returning inside the radius resets the dwell clock', () => {
-  const tracker = createGeofenceTracker({ home, radiusM: 500 });
-  tracker.ingest({ ...farAway, accuracyM: 10, ts: 0 }, 1000);
-  const insideAgain = tracker.ingest({ ...home, accuracyM: 10, ts: 500 }, 1000);
+  const tracker = createGeofenceTracker();
+  tracker.ingest({ ...farAway, accuracyM: 10, ts: 0 }, home, 500, 1000);
+  const insideAgain = tracker.ingest({ ...home, accuracyM: 10, ts: 500 }, home, 500, 1000);
   assert.equal(insideAgain.event, 'inside');
-  const backOutside = tracker.ingest({ ...farAway, accuracyM: 10, ts: 900 }, 1000);
+  const backOutside = tracker.ingest({ ...farAway, accuracyM: 10, ts: 900 }, home, 500, 1000);
   assert.equal(backOutside.event, 'outside_pending'); // dwell restarted, not yet at threshold
 });
 

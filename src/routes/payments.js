@@ -29,8 +29,6 @@ function withTimeout(promise, ms) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-const JPYC_DECIMALS = 18n;
-
 // Pure netting math, exported for direct property testing.
 export function computeNetCredit(lines) {
   return lines
@@ -38,28 +36,38 @@ export function computeNetCredit(lines) {
     .reduce((sum, l) => sum + l.amount, 0);
 }
 
+// Values are echoed verbatim from the stored attestation — never recomputed — so what gets
+// submitted on-chain is exactly what was validated and signed at attestation time.
 async function executePayoutOnChain(chain, att) {
-  const wallet = chain.getSignerWallet();
+  const wallet = chain.getRelayerWallet();
   const payout = chain.getPayoutContract(wallet);
-  const amountUnits = BigInt(att.payoutAmount) * 10n ** JPYC_DECIMALS;
   const tx = await payout.submitTrigger(
     att.policyId,
-    att.triggerCode,
-    amountUnits,
+    att.triggerRef,
+    att.coverageCode,
+    BigInt(att.payoutAmount),
     att.recipient,
-    att.timestamp,
-    att.nonce,
+    BigInt(att.monthKey),
     att.signature
   );
   const receipt = await tx.wait();
   return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
 }
 
+// Permanent (non-retryable) on-chain failures free the reserved headroom back up.
+const PERMANENT_FAILURE_REASONS = new Set(['NONCE_ALREADY_USED', 'SIGNER_MISMATCH', 'CAP_EXCEEDED']);
+
+function releaseCapLedger(db, attestationId) {
+  db.prepare(`UPDATE cap_ledger SET status = 'released' WHERE attestationId = ? AND status = 'reserved'`).run(attestationId);
+}
+
 function mapChainError(e) {
   const msg = String(e.reason || e.shortMessage || e.message || '');
   if (msg.includes('NONCE_ALREADY_USED')) return { status: 409, error: 'NONCE_ALREADY_USED' };
-  if (msg.includes('SIGNER_MISMATCH')) return { status: 409, error: 'SIGNER_MISMATCH' };
-  if (msg.includes('COOLDOWN_EXCEEDED')) return { status: 409, error: 'COOLDOWN_EXCEEDED' };
+  if (msg.includes('SIGNER_MISMATCH')) {
+    return { status: 502, error: 'SIGNER_MISMATCH', message: 'signer not registered on contract — run setSigner' };
+  }
+  if (msg.includes('CAP_EXCEEDED')) return { status: 422, error: 'CAP_EXCEEDED' };
   return { status: 502, error: 'CHAIN_ERROR', message: e.message };
 }
 
@@ -109,7 +117,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     if (!underDemoTxLimit()) {
       return res.json({ status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' });
     }
-    if (!chain.isChainDeployed() || !chain.isSignerConfigured()) {
+    if (!chain.isChainDeployed() || !chain.isRelayerConfigured()) {
       return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
     }
 
@@ -124,10 +132,11 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
         deepLink: explorerUrl,
         refId: incidentId || att.id,
       });
-      res.json({ status: 'paid', txHash, explorerUrl });
+      res.json({ status: 'paid', txHash, explorerUrl, signer: att.signer, source: att.source, payloadHash: att.payloadHash });
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: att.id });
       const mapped = mapChainError(e);
+      if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
       res.status(mapped.status).json(mapped);
     }
   }));
@@ -146,7 +155,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
 
     const attestation = db
       .prepare(
-        `SELECT * FROM attestations WHERE policyId = ? AND triggerCode = 'PT-03' AND status = 'signed' ORDER BY timestamp DESC LIMIT 1`
+        `SELECT * FROM attestations WHERE policyId = ? AND triggerCode = 'PT-06' AND status = 'signed' ORDER BY timestamp DESC LIMIT 1`
       )
       .get(settlementId);
     if (!attestation) return res.status(403).json({ error: 'ATTESTATION_REQUIRED' });
@@ -154,7 +163,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     if (!underDemoTxLimit()) {
       return res.json({ status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' });
     }
-    if (!chain.isChainDeployed() || !chain.isSignerConfigured()) {
+    if (!chain.isChainDeployed() || !chain.isRelayerConfigured()) {
       return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
     }
 
@@ -169,10 +178,20 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
         deepLink: explorerUrl,
         refId: settlementId,
       });
-      res.json({ status: 'paid', txHash, explorerUrl, included: included.map((l) => l.lineId), excluded });
+      res.json({
+        status: 'paid',
+        txHash,
+        explorerUrl,
+        included: included.map((l) => l.lineId),
+        excluded,
+        signer: attestation.signer,
+        source: attestation.source,
+        payloadHash: attestation.payloadHash,
+      });
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: attestation.id });
       const mapped = mapChainError(e);
+      if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, attestation.id);
       res.status(mapped.status).json(mapped);
     }
   }));

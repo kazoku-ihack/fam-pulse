@@ -3,7 +3,14 @@ import 'dotenv/config';
 
 /** @type {import('hardhat/config').HardhatUserConfig} */
 export default {
-  solidity: '0.8.24',
+  solidity: {
+    version: '0.8.24',
+    settings: {
+      // OpenZeppelin's utils/Bytes.sol (pulled in via ECDSA/MessageHashUtils) uses MCOPY, a
+      // Cancun opcode — the default (pre-Cancun) EVM target can't compile it.
+      evmVersion: 'cancun',
+    },
+  },
   paths: {
     sources: './src/chain/contracts',
     tests: './test/chain',

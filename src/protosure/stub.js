@@ -1,25 +1,66 @@
-// Deterministic fallback rater: the same rule check as the real Protosure API Rater
-// (protosure/rater-client.js), entirely local. Identical interface — flipping
-// ATTESTATION_MODE between "stub" and "protosure" is the only thing that changes.
+// Offline signer reproducing the Protosure rater's exact digest scheme — used for
+// ATTESTATION_MODE=stub (local rehearsal, zero external dependency) and as the fallback path
+// when the live rater is unreachable in ATTESTATION_MODE=protosure. Rule validation does NOT
+// live here — see src/attestation-rules.js, shared identically by both modes.
+//
+// Digest scheme (must match MimamorParametric.sol's computeInner + EIP-191 wrapping exactly):
+//   inner  = keccak256(abi.encodePacked(
+//              keccak256(triggerRef), keccak256(policyId), coverageCode, payoutAmount,
+//              recipient, monthKey, contractAddress, chainId))
+//   digest = keccak256("\x19Ethereum Signed Message:\n32" || inner)   // EIP-191
+// `payload_hash` (as returned to callers and stored on the attestation) is `digest`, not
+// `inner` — that's what the contract's ECDSA.recover verifies against.
 
-export const FIXED_SCHEDULE = { 'PT-01': 3000, 'PT-02': 30000, 'PT-03': 20000, 'PT-04': 10000 };
+import { ethers } from 'ethers';
 
-const PT01_BUCKET_CAP = 2;
-const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+export class StubSignerNotConfiguredError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = 'STUB_SIGNER_NOT_CONFIGURED';
+  }
+}
 
-export function validateTrigger({ db, policyId, triggerCode, payoutAmount, eventTimestamp = Date.now() }) {
-  if (!(triggerCode in FIXED_SCHEDULE)) {
-    return { ok: false, reason: 'UNKNOWN_TRIGGER_CODE' };
+function normalizeKey(key) {
+  return key.startsWith('0x') ? key : `0x${key}`;
+}
+
+// fields: { policyId, triggerRef, coverageCode, payoutAmount, recipient, monthKey, contractAddress, chainId }
+export function computeInner({ policyId, triggerRef, coverageCode, payoutAmount, recipient, monthKey, contractAddress, chainId }) {
+  const triggerRefHash = ethers.keccak256(ethers.toUtf8Bytes(triggerRef));
+  const policyIdHash = ethers.keccak256(ethers.toUtf8Bytes(policyId));
+  return ethers.keccak256(
+    ethers.solidityPacked(
+      ['bytes32', 'bytes32', 'bytes1', 'uint256', 'address', 'uint256', 'address', 'uint256'],
+      [
+        triggerRefHash,
+        policyIdHash,
+        coverageCode,
+        BigInt(payoutAmount),
+        recipient.toLowerCase(),
+        BigInt(monthKey),
+        contractAddress.toLowerCase(),
+        BigInt(chainId),
+      ]
+    )
+  );
+}
+
+// Signs a precomputed `inner` hash directly via SigningKey — NOT wallet.signMessage, which
+// would re-apply the EIP-191 prefix on top of our already-prefixed digest (double-prefix bug).
+export function signInner(inner, privateKey) {
+  const digest = ethers.hashMessage(ethers.getBytes(inner));
+  const signingKey = new ethers.SigningKey(normalizeKey(privateKey));
+  const signature = signingKey.sign(digest).serialized;
+  const signer = ethers.recoverAddress(digest, signature);
+  return { payload_hash: digest, signature, signer };
+}
+
+export function signTrigger(fields) {
+  const privateKey = process.env.STUB_SIGNER_PRIVATE_KEY;
+  if (!privateKey) {
+    throw new StubSignerNotConfiguredError('STUB_SIGNER_PRIVATE_KEY not set');
   }
-  if (payoutAmount !== FIXED_SCHEDULE[triggerCode]) {
-    return { ok: false, reason: 'RATER_AMOUNT_MISMATCH' };
-  }
-  if (triggerCode === 'PT-01' && db) {
-    const since = eventTimestamp - THIRTY_DAYS_MS;
-    const { c } = db
-      .prepare(`SELECT COUNT(*) AS c FROM attestations WHERE triggerCode = 'PT-01' AND timestamp >= ?`)
-      .get(since);
-    if (c >= PT01_BUCKET_CAP) return { ok: false, reason: 'COOLDOWN_EXCEEDED' };
-  }
-  return { ok: true, raterRef: null, source: 'stub' };
+  const inner = computeInner(fields);
+  const { payload_hash, signature, signer } = signInner(inner, privateKey);
+  return { payload_hash, signature, signer, source: 'stub' };
 }

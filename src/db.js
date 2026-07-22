@@ -112,14 +112,25 @@ function migrate(db) {
       payoutAmount REAL,
       recipient TEXT,
       timestamp INTEGER,
-      nonce TEXT,
+      triggerRef TEXT,
+      coverageCode TEXT,
+      monthKey TEXT,
       payloadHash TEXT,
       signature TEXT,
-      signerAddress TEXT,
-      txHash TEXT,
-      status TEXT,
+      signer TEXT,
       source TEXT,
-      raterRef TEXT
+      txHash TEXT,
+      status TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS cap_ledger (
+      id TEXT PRIMARY KEY,
+      coverageCode TEXT NOT NULL,
+      monthKey TEXT NOT NULL,
+      amount REAL NOT NULL,
+      attestationId TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'reserved',
+      ts INTEGER NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS settings (
@@ -155,8 +166,9 @@ export function isEmpty(db) {
   return row.c === 0;
 }
 
-// Wipes demo data but never touches `wallets` (chain contract addresses persist across resets,
-// same for on-chain nonces which live in the contract, not this DB).
+// Wipes demo data but never touches `wallets` (chain contract addresses persist across resets)
+// or `cap_ledger` (mirrors on-chain monthSpend, which a demo reset never touches either — wiping
+// the local ledger but not the chain would let the pre-check drift out of sync with reality).
 const WIPE_TABLES = [
   'metrics',
   'frs_history',
@@ -185,6 +197,9 @@ function defaultSettings(parentId, overrides = {}) {
     homeLatLng: { ...HOME },
     geofenceRadius: 500,
     monitoringActive: true,
+    configVersion: 1,
+    updatedAt: Date.now(),
+    updatedBy: 'sakura',
     knownSafePlaces: [
       { name: 'Sunrise Supermarket', lat: 35.6612, lng: 139.7031 },
       { name: "Yoshiko's Clinic", lat: 35.658, lng: 139.6988 },

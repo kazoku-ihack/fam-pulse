@@ -12,11 +12,13 @@ services:
       - key: DEMO_TIMESCALE
         value: "30"
       - key: ATTESTATION_MODE
-        value: stub
+        value: protosure # falls back to stub automatically if PROTOSURE_RATER_URL is unset/unreachable
       - key: ATTESTATION_FALLBACK
         value: stub
-      - key: PROTOSURE_PRODUCT_CODE
-        value: KAZOKU-PARAM-001
+      - key: REGISTERED_SIGNER
+        value: "0x2c7536e3605d9c16a7a3d7b1898e529396a65c23"
+      - key: CHAIN_ID
+        value: "43113"
       - key: SIM_CARE_REPLY
         value: "0"
       - key: SIM_FAIL_DISPATCH
@@ -42,7 +44,7 @@ services:
         sync: false
       - key: IMAP_URL
         sync: false
-      - key: SIGNER_PRIVATE_KEY
+      - key: STUB_SIGNER_PRIVATE_KEY
         sync: false
       - key: DEPLOYER_PRIVATE_KEY
         sync: false
@@ -50,7 +52,7 @@ services:
         sync: false
       - key: PAYOUT_ADDR
         sync: false
-      - key: PROTOSURE_BASE_URL
+      - key: PROTOSURE_RATER_URL
         sync: false
       - key: PROTOSURE_API_TOKEN
         sync: false

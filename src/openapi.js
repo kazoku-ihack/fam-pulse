@@ -166,23 +166,32 @@ const CareRequest = {
   },
 };
 
+const TRIGGER_CODE_ENUM = ['PT-01', 'PT-02', 'PT-03', 'PT-04', 'PT-05', 'PT-06'];
+
 const Attestation = {
   type: 'object',
   properties: {
     id: { type: 'string', format: 'uuid' },
-    policyId: { type: 'string' },
-    triggerCode: { type: 'string', enum: ['PT-01', 'PT-02', 'PT-03', 'PT-04'] },
-    payoutAmount: { type: 'integer', description: 'JPY, fixed schedule: PT-01=3000 PT-02=30000 PT-03=20000 PT-04=10000' },
+    policyId: { type: 'string', description: 'e.g. "KP-2026-001" — an insurance policy identifier, distinct from triggerRef' },
+    triggerCode: {
+      type: 'string',
+      enum: TRIGGER_CODE_ENUM,
+      description:
+        'Fixed schedule: PT-01=¥3,000 PT-02=¥30,000 PT-03=¥20,000 PT-04=¥10,000 PT-05=¥1,000 (fraud-reward). ' +
+        'PT-06 (settlement) has no fixed amount — payoutAmount is the actual netted credit.',
+    },
+    payoutAmount: { type: 'integer', description: 'whole JPY (DemoJPYC is a decimals=0 token) — server-derived for PT-01..PT-05, caller-supplied for PT-06' },
     recipient: { type: 'string', description: '0x-prefixed EVM address' },
     timestamp: { type: 'integer' },
-    nonce: { type: 'string' },
-    payloadHash: { type: 'string' },
+    triggerRef: { type: 'string', description: 'on-chain replay-protection key — an incident/settlement UUID, or a generated one' },
+    coverageCode: { type: 'string', example: '0x01', description: 'bytes1, derived 1:1 from triggerCode via src/coverage.js' },
+    monthKey: { type: 'string', example: '202608', description: 'YYYYMM, derived in Asia/Tokyo' },
+    payloadHash: { type: 'string', description: 'the EIP-191-prefixed digest — what the contract ECDSA.recover verifies against' },
     signature: { type: 'string' },
-    signerAddress: { type: 'string' },
+    signer: { type: 'string', description: 'the address that produced `signature` — must be isRegisteredSigner on-chain' },
     txHash: { type: 'string', nullable: true },
     status: { type: 'string', enum: ['signed', 'paid'] },
     source: { type: 'string', enum: ['stub', 'protosure', 'stub-fallback'] },
-    raterRef: { type: 'string', nullable: true },
   },
 };
 
@@ -238,6 +247,21 @@ const Settings = {
     monitoringActive: { type: 'boolean' },
     knownSafePlaces: { type: 'array', items: KnownSafePlace },
     chips: Chips,
+    configVersion: { type: 'integer' },
+    updatedAt: { type: 'integer' },
+    updatedBy: { type: 'string', example: 'sakura' },
+  },
+};
+
+const MonitoringConfig = {
+  type: 'object',
+  properties: {
+    homeLatLng: { type: 'object', properties: { lat: { type: 'number' }, lng: { type: 'number' } } },
+    geofenceRadius: { type: 'integer', minimum: 100, maximum: 2000 },
+    monitoringActive: { type: 'boolean' },
+    configVersion: { type: 'integer', description: 'bumped on every PATCH — the Parent app watches telemetry.configVersion and re-fetches this on change' },
+    updatedAt: { type: 'integer' },
+    updatedBy: { type: 'string', example: 'sakura' },
   },
 };
 
@@ -259,7 +283,8 @@ const TelemetryFrame = {
     dailySteps: { type: 'integer', nullable: true },
     sleepHours: { type: 'number', nullable: true },
     lastHeartRate: { type: 'integer', nullable: true },
-    sharingEnabled: { type: 'boolean', description: 'false means consent is off — all other fields are omitted' },
+    sharingEnabled: { type: 'boolean', description: 'false means consent is off — all other fields except configVersion are omitted' },
+    configVersion: { type: 'integer', description: 'the Parent app re-fetches GET /v1/policy/monitoringConfig when this changes' },
     ts: { type: 'integer' },
   },
 };
@@ -335,6 +360,7 @@ export const openApiSpec = {
       Settlement,
       SettlementLine,
       Settings,
+      MonitoringConfig,
       ParentStatus,
       TelemetryFrame,
       Event,
@@ -642,25 +668,30 @@ export const openApiSpec = {
           properties: { attestationId: { type: 'string' }, toAddr: { type: 'string' }, incidentId: { type: 'string' }, parentId: { type: 'string' } },
         }),
         responses: {
-          200: jsonResponse('paid (with txHash+explorerUrl), pending (>10s, resolve by polling), or DEMO_TX_LIMIT', {
+          200: jsonResponse('paid (with txHash+explorerUrl+signer+source+payloadHash), pending (>10s, resolve by polling), or DEMO_TX_LIMIT', {
             type: 'object',
             properties: {
               status: { type: 'string', enum: ['paid', 'pending', 'DEMO_TX_LIMIT'] },
               txHash: { type: 'string' },
               explorerUrl: { type: 'string' },
+              signer: { type: 'string' },
+              source: { type: 'string', enum: ['stub', 'protosure', 'stub-fallback'] },
+              payloadHash: { type: 'string' },
             },
           }),
           400: errRes('RECIPIENT_MISMATCH'),
           403: errRes('ATTESTATION_REQUIRED — missing, unknown, or unsigned attestationId'),
-          409: errRes('NONCE_ALREADY_USED | SIGNER_MISMATCH | COOLDOWN_EXCEEDED (mapped from the on-chain revert reason)'),
-          503: errRes('CHAIN_NOT_CONFIGURED (no deployed contracts / signer)'),
+          409: errRes('NONCE_ALREADY_USED (triggerRef replay)'),
+          422: errRes('CAP_EXCEEDED'),
+          502: errRes('SIGNER_MISMATCH — signer not registered on contract, run setSigner'),
+          503: errRes('CHAIN_NOT_CONFIGURED (no deployed contracts / relayer)'),
         },
       },
     },
     '/v1/jpyc/batchTransfer': {
       post: {
         tags: ['Payments'],
-        summary: 'Pay a settlement\'s PT-03 batch attestation. Server re-derives exclusions = disputed ∪ unattested — a client-supplied exclusion list is never trusted.',
+        summary: 'Pay a settlement\'s PT-06 batch attestation. Server re-derives exclusions = disputed ∪ unattested — a client-supplied exclusion list is never trusted.',
         requestBody: { required: true, ...jsonBody({ type: 'object', required: ['settlementId'], properties: { settlementId: { type: 'string' }, parentId: { type: 'string' } } }) },
         responses: {
           200: jsonResponse('paid/pending/DEMO_TX_LIMIT, plus which lines were included/excluded', {
@@ -671,10 +702,16 @@ export const openApiSpec = {
               explorerUrl: { type: 'string' },
               included: { type: 'array', items: { type: 'string' } },
               excluded: { type: 'array', items: { type: 'string' } },
+              signer: { type: 'string' },
+              source: { type: 'string', enum: ['stub', 'protosure', 'stub-fallback'] },
+              payloadHash: { type: 'string' },
             },
           }),
           400: errRes('NOTHING_TO_TRANSFER'),
           403: errRes('ATTESTATION_REQUIRED — run POST /v1/attestation/settlement/batch first'),
+          409: errRes('NONCE_ALREADY_USED'),
+          422: errRes('CAP_EXCEEDED'),
+          502: errRes('SIGNER_MISMATCH'),
           503: errRes('CHAIN_NOT_CONFIGURED'),
         },
       },
@@ -710,26 +747,29 @@ export const openApiSpec = {
             type: 'object',
             required: ['policyId', 'triggerCode', 'recipient'],
             properties: {
-              policyId: { type: 'string' },
-              triggerCode: { type: 'string', enum: ['PT-01', 'PT-02', 'PT-03', 'PT-04'] },
+              policyId: { type: 'string', example: 'KP-2026-001' },
+              triggerCode: { type: 'string', enum: TRIGGER_CODE_ENUM },
               recipient: { type: 'string', description: '0x-prefixed EVM address' },
               parentId: { type: 'string' },
-              incidentId: { type: 'string' },
+              incidentId: { type: 'string', description: 'used as triggerRef (the on-chain replay key) if triggerRef is not given' },
+              triggerRef: { type: 'string', description: 'defaults to incidentId, else a generated UUID' },
+              payoutAmount: { type: 'number', description: 'required for PT-06 only (the settlement net credit) — ignored for every other trigger code' },
               eventTimestamp: { type: 'integer' },
             },
           }),
         },
         responses: {
-          201: jsonResponse('Signed attestation (payoutAmount is always the fixed schedule value, never client-supplied)', Attestation),
-          422: errRes('RATER_AMOUNT_MISMATCH | POLICY_NOT_IN_FORCE | TRIGGER_NOT_CONFIGURED | COOLDOWN_EXCEEDED | RATER_UNAVAILABLE'),
-          503: errRes('SIGNER_NOT_CONFIGURED'),
+          201: jsonResponse('Signed attestation (payoutAmount is the fixed schedule value for PT-01..PT-05, never client-supplied)', Attestation),
+          400: errRes('PAYOUT_AMOUNT_REQUIRED_FOR_PT-06'),
+          422: errRes('UNKNOWN_TRIGGER_CODE | AMOUNT_MISMATCH | COOLDOWN_EXCEEDED | CAP_EXCEEDED | RATER_UNAVAILABLE'),
+          503: errRes('SIGNER_NOT_CONFIGURED (STUB_SIGNER_PRIVATE_KEY unset) | CHAIN_NOT_CONFIGURED (PAYOUT_ADDR unset)'),
         },
       },
     },
     '/v1/attestation/{id}': {
       get: {
         tags: ['Attestation'],
-        summary: 'Get an attestation (includes source + raterRef for judge transparency)',
+        summary: 'Get an attestation (includes source + payloadHash for judge transparency)',
         parameters: [idParam()],
         responses: { 200: jsonResponse('OK', Attestation), 404: errRes('NOT_FOUND') },
       },
@@ -737,7 +777,7 @@ export const openApiSpec = {
     '/v1/attestation/settlement/batch': {
       post: {
         tags: ['Attestation'],
-        summary: 'Batch-attest a settlement (PT-03, fixed ¥20,000) and mark all non-disputed lines attested',
+        summary: 'Batch-attest a settlement (PT-06, amount = the real netted credit) and mark all non-disputed lines attested',
         requestBody: {
           required: true,
           ...jsonBody({ type: 'object', required: ['settlementId', 'recipient'], properties: { settlementId: { type: 'string' }, recipient: { type: 'string' }, parentId: { type: 'string' } } }),
@@ -748,11 +788,14 @@ export const openApiSpec = {
     '/v1/attestation/signer/current': {
       get: {
         tags: ['Attestation'],
-        summary: 'Current REAL-LITE signer address (pinnedSigner on-chain must match this)',
+        summary: 'REGISTERED_SIGNER plus a live isRegisteredSigner read from the deployed contract',
         responses: {
           200: jsonResponse('OK', {
             type: 'object',
-            properties: { configured: { type: 'boolean' }, signerAddress: { type: 'string', nullable: true } },
+            properties: {
+              registeredSigner: { type: 'string', nullable: true },
+              isRegisteredOnChain: { type: 'boolean', nullable: true, description: 'null when chain is not deployed yet' },
+            },
           }),
         },
       },
@@ -780,9 +823,15 @@ export const openApiSpec = {
       },
     },
     '/v1/policy/monitoringConfig': {
+      get: {
+        tags: ['Settings'],
+        summary: 'Geo-fence config + version (the Parent app polls telemetry.configVersion and re-fetches this on change)',
+        parameters: [parentIdParam],
+        responses: { 200: jsonResponse('OK', MonitoringConfig) },
+      },
       patch: {
         tags: ['Settings'],
-        summary: 'Update geo-fence home/radius/monitoring (separate from /v1/settings for OpenAPI contract-compatibility)',
+        summary: 'Update geo-fence home/radius/monitoring (separate from /v1/settings for OpenAPI contract-compatibility). Bumps configVersion.',
         requestBody: {
           required: true,
           ...jsonBody({
@@ -796,7 +845,7 @@ export const openApiSpec = {
             },
           }),
         },
-        responses: { 200: jsonResponse('OK', Settings), 409: errRes('PAIRING_REQUIRED') },
+        responses: { 200: jsonResponse('OK', MonitoringConfig), 409: errRes('PAIRING_REQUIRED') },
       },
     },
 

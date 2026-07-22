@@ -1,6 +1,11 @@
-// ethers v6 provider/signer/contract helpers. Deliberately uses hand-written ABI fragments
+// ethers v6 provider/relayer/contract helpers. Deliberately uses hand-written ABI fragments
 // instead of importing Hardhat build artifacts, so the API server never depends on a
 // `hardhat compile` step at runtime (Render just runs `npm ci && node src/server.js`).
+//
+// Signing an attestation (producing the ECDSA signature the contract verifies) is no longer
+// this module's job — that's src/protosure/stub.js (offline) or src/protosure/rater-client.js
+// (Protosure). This module only submits already-signed payloads on-chain, which requires a
+// funded wallet to pay gas but has nothing to do with whose signature is inside the payload.
 
 import { ethers } from 'ethers';
 
@@ -19,11 +24,14 @@ const ERC20_ABI = [
 ];
 
 const PAYOUT_ABI = [
-  'function submitTrigger(string policyId, string triggerCode, uint256 payoutAmount, address recipient, uint256 timestamp, bytes32 nonce, bytes signature)',
-  'function usedNonces(bytes32) view returns (bool)',
-  'function pinnedSigner() view returns (address)',
-  'function setPinnedSigner(address signer)',
-  'event PayoutExecuted(string policyId, string triggerCode, uint256 payoutAmount, address recipient, uint256 timestamp, bytes32 nonce, bytes32 payloadHash, address signer)',
+  'function submitTrigger(string policyIdStr, string triggerRefStr, bytes1 coverageCode, uint256 amountJpy, address recipient, uint256 monthKey, bytes signature)',
+  'function isRegisteredSigner(address) view returns (bool)',
+  'function usedNonce(bytes32) view returns (bool)',
+  'function cap(bytes1) view returns (uint256)',
+  'function monthSpend(bytes1, uint256) view returns (uint256)',
+  'function setSigner(address signer, bool enabled)',
+  'function setCap(bytes1 coverageCode, uint256 amount)',
+  'event PayoutExecuted(bytes32 indexed triggerRef, bytes32 indexed policyId, bytes1 coverageCode, uint256 amountJpy, address recipient, uint256 monthKey, address signer)',
 ];
 
 let cachedProvider = null;
@@ -33,11 +41,13 @@ export function getProvider() {
   return cachedProvider;
 }
 
-// Signing a payloadHash is pure crypto and needs no network access — only attach a provider
-// (for balance reads / tx submission elsewhere) when FUJI_RPC happens to be configured too.
-export function getSignerWallet(privateKeyEnvVar = 'SIGNER_PRIVATE_KEY') {
-  const key = process.env[privateKeyEnvVar];
-  if (!key) throw new ChainNotConfiguredError(`${privateKeyEnvVar} not set`);
+// The wallet that submits (pays gas for) submitTrigger transactions. submitTrigger has no
+// msg.sender restriction — anyone can relay a validly-signed payload — so this is unrelated to
+// the attestation signer. STUB_SIGNER_PRIVATE_KEY is the only private key left in this service's
+// env (see .env.example); it doubles as the relayer wallet in both stub and protosure mode.
+export function getRelayerWallet() {
+  const key = process.env.STUB_SIGNER_PRIVATE_KEY;
+  if (!key) throw new ChainNotConfiguredError('STUB_SIGNER_PRIVATE_KEY not set');
   try {
     return new ethers.Wallet(key, getProvider());
   } catch {
@@ -49,8 +59,8 @@ export function isChainDeployed() {
   return Boolean(process.env.FUJI_RPC && process.env.JPYC_ADDR && process.env.PAYOUT_ADDR);
 }
 
-export function isSignerConfigured() {
-  return Boolean(process.env.SIGNER_PRIVATE_KEY);
+export function isRelayerConfigured() {
+  return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY);
 }
 
 export function getJpycContract(runner) {
@@ -63,40 +73,16 @@ export function getPayoutContract(runner) {
   return new ethers.Contract(process.env.PAYOUT_ADDR, PAYOUT_ABI, runner || getProvider());
 }
 
-// Must match KazokuPayout.sol's `keccak256(abi.encode(policyId, triggerCode, payoutAmount,
-// recipient, timestamp, nonce))` exactly.
-export function buildPayloadHash({ policyId, triggerCode, payoutAmount, recipient, timestamp, nonce }) {
-  return ethers.keccak256(
-    ethers.AbiCoder.defaultAbiCoder().encode(
-      ['string', 'string', 'uint256', 'address', 'uint256', 'bytes32'],
-      [policyId, triggerCode, payoutAmount, recipient, timestamp, nonce]
-    )
-  );
-}
-
-// personal_sign over the payloadHash bytes — matches the contract's
-// "\x19Ethereum Signed Message:\n32" + hash reconstruction, verified via ecrecover.
-export async function signPayloadHash(wallet, payloadHash) {
-  return wallet.signMessage(ethers.getBytes(payloadHash));
-}
-
-export function randomNonce() {
-  return ethers.hexlify(ethers.randomBytes(32));
-}
-
 export function explorerUrl(txHash) {
   return `https://testnet.snowtrace.io/tx/${txHash}`;
 }
 
 export const chain = {
   getProvider,
-  getSignerWallet,
+  getRelayerWallet,
   isChainDeployed,
-  isSignerConfigured,
+  isRelayerConfigured,
   getJpycContract,
   getPayoutContract,
-  buildPayloadHash,
-  signPayloadHash,
-  randomNonce,
   explorerUrl,
 };

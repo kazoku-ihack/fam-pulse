@@ -24,6 +24,17 @@ const monitoringConfigSchema = z.object({
   monitoringActive: z.boolean(),
 });
 
+function monitoringConfigView(settings) {
+  return {
+    homeLatLng: settings.homeLatLng,
+    geofenceRadius: settings.geofenceRadius,
+    monitoringActive: settings.monitoringActive,
+    configVersion: settings.configVersion,
+    updatedAt: settings.updatedAt,
+    updatedBy: settings.updatedBy,
+  };
+}
+
 export function settingsRouter(db) {
   const router = Router();
 
@@ -43,6 +54,11 @@ export function settingsRouter(db) {
     res.json(settings);
   });
 
+  router.get('/v1/policy/monitoringConfig', (req, res) => {
+    const parentId = getParentId(req);
+    res.json(monitoringConfigView(getSettings(db, parentId)));
+  });
+
   router.patch('/v1/policy/monitoringConfig', (req, res) => {
     const parsed = monitoringConfigSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
@@ -54,15 +70,18 @@ export function settingsRouter(db) {
     settings.homeLatLng = parsed.data.homeLatLng;
     settings.geofenceRadius = parsed.data.geofenceRadius;
     settings.monitoringActive = parsed.data.monitoringActive;
+    settings.configVersion = (settings.configVersion || 1) + 1;
+    settings.updatedAt = Date.now();
+    settings.updatedBy = 'sakura';
     saveSettings(db, parentId, settings);
     appendEvent(db, {
       parentId,
-      type: 'settings',
-      title: `Geo-fence updated: ${parsed.data.geofenceRadius}m radius`,
-      deepLink: '/v1/settings',
+      type: 'geofence_updated',
+      title: `Geo-fence updated: ${parsed.data.geofenceRadius}m radius (v${settings.configVersion})`,
+      deepLink: '/v1/policy/monitoringConfig',
       refId: parentId,
     });
-    res.json(settings);
+    res.json(monitoringConfigView(settings));
   });
 
   return router;
