@@ -7,7 +7,7 @@
 // timeout/failure/malformed-JSON (even after one retry) fails safe to notify_now/high.
 
 import { z } from 'zod';
-import { callClaudeJson } from './client.js';
+import { callClaudeJson, isClaudeConfigured } from './client.js';
 
 export const triageSchema = z.object({
   severity: z.enum(['low', 'medium', 'high']),
@@ -22,6 +22,45 @@ const FAIL_SAFE = {
   recommendedAction: 'notify_now',
   reasoning: 'Claude unavailable or returned malformed output — defaulting to immediate notification (fail-safe).',
 };
+
+// Local stand-in for the Claude call, used only when ANTHROPIC_API_KEY isn't set (e.g. this
+// demo deploy). Applies the same reasoning a triage prompt would, so the reasoning text reads
+// like a real assessment instead of the generic "Claude unavailable" fail-safe message.
+function stubTriage(ctx) {
+  const safe =
+    ctx.movingTowardSafePlace &&
+    ctx.frsScore >= 60 &&
+    ctx.localHour >= 7 &&
+    ctx.localHour < 19 &&
+    ctx.dwellMin < 20;
+
+  const situation =
+    `Subject has been ${ctx.distanceM}m from home for ${ctx.dwellMin} min, heading ${ctx.direction}, ` +
+    `today's FRS is ${ctx.frsScore}. ` +
+    (ctx.movingTowardSafePlace
+      ? 'Currently moving toward a known safe place.'
+      : 'Not moving toward any known safe place.');
+
+  if (safe) {
+    return {
+      severity: 'low',
+      falseAlarmLikelihood: 0.82,
+      recommendedAction: 'soft_check',
+      reasoning:
+        `[stub triage] ${situation} Pattern matches a routine daytime outing with a healthy FRS — ` +
+        'likely a false alarm, recommending a soft check-in rather than an immediate alert.',
+    };
+  }
+
+  return {
+    severity: ctx.dwellMin >= 20 || ctx.frsScore < 50 ? 'high' : 'medium',
+    falseAlarmLikelihood: 0.15,
+    recommendedAction: 'notify_now',
+    reasoning:
+      `[stub triage] ${situation} Pattern is inconsistent with a routine outing — recommending ` +
+      'immediate caregiver notification.',
+  };
+}
 
 function buildPrompt(ctx) {
   return JSON.stringify(
@@ -47,15 +86,19 @@ function buildPrompt(ctx) {
 export async function triageWandering(ctx, { callJson = callClaudeJson } = {}) {
   let triage;
   try {
-    const prompt = buildPrompt(ctx);
-    triage = await callJson({
-      purpose: 'wandering-triage',
-      system:
-        'You are a cautious eldercare monitoring assistant screening a possible wandering event. ' +
-        'Respond with strict JSON only, matching the schema exactly. No prose outside the JSON object.',
-      prompt,
-      schema: triageSchema,
-    });
+    if (callJson === callClaudeJson && !isClaudeConfigured()) {
+      triage = stubTriage(ctx);
+    } else {
+      const prompt = buildPrompt(ctx);
+      triage = await callJson({
+        purpose: 'wandering-triage',
+        system:
+          'You are a cautious eldercare monitoring assistant screening a possible wandering event. ' +
+          'Respond with strict JSON only, matching the schema exactly. No prose outside the JSON object.',
+        prompt,
+        schema: triageSchema,
+      });
+    }
   } catch (e) {
     return { ...FAIL_SAFE, guardsPass: false };
   }

@@ -18,7 +18,7 @@ function webhookSecret() {
   return process.env.API_KEY || 'kazoku-demo-webhook-secret';
 }
 
-function baseUrl(req) {
+function baseUrl() {
   return process.env.INTERNAL_BASE_URL || `http://127.0.0.1:${process.env.PORT || 3000}`;
 }
 
@@ -39,6 +39,63 @@ const dispatchSchema = z.object({
   incidentId: z.string().min(1),
 });
 
+// Core dispatch-creation logic, shared by the HTTP route and by automatic triggers (e.g. an
+// unusual wandering triage result — see createDispatchForIncident's caller in routes/incidents.js).
+// `incident` only needs { id, parentId, lat, lng }. Returns { status, body } — never throws for
+// expected business outcomes (duplicate/retry-limit), so callers can act on `status` uniformly.
+export function createDispatchForIncident(db, incident, { idempotencyKey = null } = {}) {
+  if (idempotencyKey) {
+    const existing = db
+      .prepare('SELECT * FROM dispatches WHERE incidentId = ? AND idempotencyKey = ?')
+      .get(incident.id, idempotencyKey);
+    if (existing) return { status: 200, body: parseDispatch(existing) };
+  }
+
+  const activeExisting = db
+    .prepare(`SELECT * FROM dispatches WHERE incidentId = ? AND status NOT IN ('completed','cancelled')`)
+    .get(incident.id);
+  if (activeExisting) {
+    return { status: 409, body: { error: 'DUPLICATE_ACTIVE_DISPATCH', dispatch: parseDispatch(activeExisting) } };
+  }
+
+  const priorCount = db
+    .prepare(`SELECT COUNT(*) AS c FROM dispatches WHERE incidentId = ?`)
+    .get(incident.id).c;
+  if (priorCount >= MAX_RETRIES) {
+    return { status: 429, body: { error: 'RETRY_LIMIT_EXCEEDED' } };
+  }
+
+  const settings = getSettings(db, incident.parentId);
+  const pickup = { lat: incident.lat, lng: incident.lng };
+  const dropoff = settings.homeLatLng;
+
+  const id = randomUUID();
+  const driver = driverInfo();
+  db.prepare(
+    `INSERT INTO dispatches (id, incidentId, status, driver_json, etaMin, lat, lng, retryCount, idempotencyKey, createdTs)
+     VALUES (?,?,?,?,?,?,?,?,?,?)`
+  ).run(id, incident.id, 'requested', JSON.stringify(driver), 8, pickup.lat, pickup.lng, priorCount, idempotencyKey || null, Date.now());
+
+  appendEvent(db, {
+    parentId: incident.parentId,
+    type: 'wandering',
+    title: `Taxi dispatched — ${driver.name}`,
+    deepLink: `/v1/uber/dispatch/${id}`,
+    refId: id,
+  });
+
+  startDispatchSimulation({
+    dispatchId: id,
+    incidentId: incident.id,
+    baseUrl: baseUrl(),
+    secret: webhookSecret(),
+    pickup,
+    dropoff,
+  });
+
+  return { status: 201, body: parseDispatch(db.prepare('SELECT * FROM dispatches WHERE id = ?').get(id)) };
+}
+
 export function dispatchRouter(db) {
   const router = Router();
 
@@ -51,56 +108,8 @@ export function dispatchRouter(db) {
     const incident = db.prepare('SELECT * FROM incidents WHERE id = ?').get(incidentId);
     if (!incident) return res.status(404).json({ error: 'INCIDENT_NOT_FOUND' });
 
-    if (idempotencyKey) {
-      const existing = db
-        .prepare('SELECT * FROM dispatches WHERE incidentId = ? AND idempotencyKey = ?')
-        .get(incidentId, idempotencyKey);
-      if (existing) return res.status(200).json(parseDispatch(existing));
-    }
-
-    const activeExisting = db
-      .prepare(`SELECT * FROM dispatches WHERE incidentId = ? AND status NOT IN ('completed','cancelled')`)
-      .get(incidentId);
-    if (activeExisting) {
-      return res.status(409).json({ error: 'DUPLICATE_ACTIVE_DISPATCH', dispatch: parseDispatch(activeExisting) });
-    }
-
-    const priorCount = db
-      .prepare(`SELECT COUNT(*) AS c FROM dispatches WHERE incidentId = ?`)
-      .get(incidentId).c;
-    if (priorCount >= MAX_RETRIES) {
-      return res.status(429).json({ error: 'RETRY_LIMIT_EXCEEDED' });
-    }
-
-    const settings = getSettings(db, incident.parentId);
-    const pickup = { lat: incident.lat, lng: incident.lng };
-    const dropoff = settings.homeLatLng;
-
-    const id = randomUUID();
-    const driver = driverInfo();
-    db.prepare(
-      `INSERT INTO dispatches (id, incidentId, status, driver_json, etaMin, lat, lng, retryCount, idempotencyKey, createdTs)
-       VALUES (?,?,?,?,?,?,?,?,?,?)`
-    ).run(id, incidentId, 'requested', JSON.stringify(driver), 8, pickup.lat, pickup.lng, priorCount, idempotencyKey || null, Date.now());
-
-    appendEvent(db, {
-      parentId: incident.parentId,
-      type: 'wandering',
-      title: `Taxi dispatched — ${driver.name}`,
-      deepLink: `/v1/uber/dispatch/${id}`,
-      refId: id,
-    });
-
-    startDispatchSimulation({
-      dispatchId: id,
-      incidentId,
-      baseUrl: baseUrl(req),
-      secret: webhookSecret(),
-      pickup,
-      dropoff,
-    });
-
-    res.status(201).json(parseDispatch(db.prepare('SELECT * FROM dispatches WHERE id = ?').get(id)));
+    const { status, body } = createDispatchForIncident(db, incident, { idempotencyKey });
+    res.status(status).json(body);
   });
 
   router.get('/v1/uber/dispatch/:id', (req, res) => {

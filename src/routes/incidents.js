@@ -7,6 +7,7 @@ import { currentPosition } from '../sims/gps.js';
 import { triageWandering } from '../claude/wandering-triage.js';
 import { computeFRS } from '../frs.js';
 import { checkFrsAlarms } from '../alarms.js';
+import { createDispatchForIncident } from './dispatch.js';
 
 const trackers = new Map(); // parentId -> geofence tracker
 const TICK_MS = 2000;
@@ -76,6 +77,7 @@ async function createWanderingIncident(db, parentId, settings, geofenceEvent) {
   const pos = currentPosition(parentId, settings.homeLatLng);
   const frs = frsContextFor(db, parentId);
   const localHour = new Date().getHours();
+  const dwellMin = Math.round(geofenceEvent.dwellMs / 60000);
 
   const knownSafePlaces = settings.knownSafePlaces || [];
   const movingTowardSafePlace = knownSafePlaces.some(
@@ -96,7 +98,7 @@ async function createWanderingIncident(db, parentId, settings, geofenceEvent) {
     geofenceEvent.exitTs,
     Math.round((geofenceEvent.dwellMs / 60000) * 100) / 100,
     ts + 10 * 60 * 1000,
-    JSON.stringify([{ ts, event: 'incident_created', detail: `Exited geo-fence, dwell ${Math.round(geofenceEvent.dwellMs / 60000)}min` }])
+    JSON.stringify([{ ts, event: 'incident_created', detail: `Exited geo-fence, dwell ${dwellMin}min` }])
   );
 
   appendEvent(db, {
@@ -108,7 +110,7 @@ async function createWanderingIncident(db, parentId, settings, geofenceEvent) {
   });
 
   const triage = await triageWandering({
-    dwellMin: Math.round(geofenceEvent.dwellMs / 60000),
+    dwellMin,
     distanceM: Math.round(geofenceEvent.distanceM),
     direction: geofenceEvent.direction,
     localTimeIso: new Date(ts).toISOString(),
@@ -126,6 +128,33 @@ async function createWanderingIncident(db, parentId, settings, geofenceEvent) {
     id
   );
   addTimeline(db, id, { event: 'triage', detail: triage.reasoning, recommendedAction: triage.recommendedAction });
+
+  // Surface the triage reason in the same activity feed the app already polls (GET /v1/events),
+  // so "why was I alerted" is visible without a second call to fetch the incident's timeline.
+  appendEvent(db, {
+    parentId,
+    type: 'wandering',
+    title: `Triage (${triage.severity}): ${triage.reasoning}`,
+    deepLink: `/v1/incidents/${id}`,
+    refId: id,
+  });
+
+  // Auto-dispatch: "wandering for more than 10 minutes" is measured on the same (possibly
+  // DEMO_TIMESCALE-compressed) clock the geo-fence tracker uses, not wall-clock dwellMin — a
+  // WANDERING incident only ever reaches this point once geofenceEvent.dwellMs has crossed
+  // dwellThresholdMs(), so this is a defensive restatement of that same rule, not a fresh timer.
+  // 'soft_check' is the only triage outcome that means "probably fine" — anything else
+  // (notify_now / dispatch_suggest) is treated as unusual and dispatches a taxi automatically
+  // rather than waiting on the caregiver to request one.
+  if (geofenceEvent.dwellMs >= dwellThresholdMs() && triage.recommendedAction !== 'soft_check') {
+    const { status } = createDispatchForIncident(db, { id, parentId, lat: pos.lat, lng: pos.lng });
+    if (status === 201) {
+      addTimeline(db, id, {
+        event: 'auto_dispatch',
+        detail: `Automatic taxi dispatch triggered — dwell ${dwellMin}min, triage recommended ${triage.recommendedAction}`,
+      });
+    }
+  }
 
   return id;
 }
