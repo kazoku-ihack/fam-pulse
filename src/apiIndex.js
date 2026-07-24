@@ -6,11 +6,11 @@ export const API_INDEX = {
   interactiveDocs: '/docs',
   openApiSpec: '/openapi.json',
   repo: 'https://github.com/kazoku-ihack/fam-pulse#readme',
-  judgeConsole: '/judge/judge.html',
+  judgeConsole: '/judge',
   note: 'Every route below requires header "x-api-key: <your key>" except the ones marked public. Full request/response schemas: /docs.',
   routes: [
     { method: 'GET', path: '/health', auth: 'public' },
-    { method: 'GET', path: '/judge/judge.html', auth: 'public', description: 'Judge Console (static page)' },
+    { method: 'GET', path: '/judge', auth: 'public', description: 'Judge Console (static page; /judge/judge.html also works)' },
     { method: 'GET', path: '/v1/demo/status', auth: 'public (or JUDGE_KEY if set)' },
     { method: 'POST', path: '/v1/demo/reset', auth: 'public (or JUDGE_KEY if set)' },
     { method: 'POST', path: '/v1/demo/scenario/:name', auth: 'public (or JUDGE_KEY if set)', description: 'name = wandering | false-alarm | care-reply' },

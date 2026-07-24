@@ -10,7 +10,7 @@
 
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { callClaudeJson } from './client.js';
+import { callClaudeJson, isClaudeConfigured } from './client.js';
 import { appendEvent } from '../db.js';
 
 export const frsReviewSchema = z.object({
@@ -26,6 +26,56 @@ const FAIL_SAFE = {
   category: 'genuine_decline',
   reasoning: 'Claude unavailable or returned malformed output — raising to be safe (fail-safe).',
 };
+
+// Local stand-in for the Claude call, used only when ANTHROPIC_API_KEY isn't set (e.g. this
+// demo deploy). Mirrors the same data-artifact-vs-genuine-decline reasoning a review prompt
+// would apply, so the reasoning text reads like a real assessment rather than the generic
+// "Claude unavailable" fail-safe message.
+function stubReview(ctx) {
+  const gaps = ctx.chargerDayGaps ?? [];
+  const wearFlags = ctx.wearTimeFlags ?? [];
+  const scores = (ctx.series ?? []).map((s) => s.score).filter((s) => s != null);
+  const condition = (ctx.conditionType ?? 'condition').toLowerCase();
+
+  const recentNotWorn = wearFlags.length > 0 && wearFlags[wearFlags.length - 1]?.worn === false;
+  const isOneOffDip =
+    scores.length >= 3 &&
+    scores[scores.length - 1] < 60 &&
+    scores.slice(0, -1).every((s) => s >= 60);
+
+  if (recentNotWorn || gaps.length > 0) {
+    return {
+      decision: 'void',
+      confidence: 0.78,
+      category: recentNotWorn ? 'watch_not_worn' : 'data_gap',
+      reasoning:
+        `[stub review] ${gaps.length} charger-day gap(s) in the last 14 days` +
+        (recentNotWorn ? ", and the device wasn't worn on the most recent day" : '') +
+        ` — likely a missing-data artifact rather than a genuine ${condition}, voiding this alarm.`,
+    };
+  }
+
+  if (isOneOffDip) {
+    return {
+      decision: 'void',
+      confidence: 0.65,
+      category: 'one_off_outlier',
+      reasoning:
+        `[stub review] FRS dipped to ${scores[scores.length - 1]} on a single day against an otherwise ` +
+        `steady history (${scores.slice(0, -1).join(', ')}) — treating as a one-off outlier rather than ` +
+        'sustained decline.',
+    };
+  }
+
+  return {
+    decision: 'raise',
+    confidence: 0.85,
+    category: 'genuine_decline',
+    reasoning:
+      `[stub review] Pattern shows a sustained decline with no obvious data artifact (no charger-day gaps, ` +
+      `device worn) — raising as a genuine ${condition}.`,
+  };
+}
 
 function buildPrompt(ctx) {
   return JSON.stringify(
@@ -45,6 +95,9 @@ function buildPrompt(ctx) {
 
 export async function reviewFrsAlarm(ctx, { callJson = callClaudeJson } = {}) {
   try {
+    if (callJson === callClaudeJson && !isClaudeConfigured()) {
+      return stubReview(ctx);
+    }
     const prompt = buildPrompt(ctx);
     return await callJson({
       purpose: 'frs-review',

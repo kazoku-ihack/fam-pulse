@@ -30,14 +30,35 @@ export function demoRouter(db, { callJson } = {}) {
   // plain static page — can never hold the x-api-key.
   router.get('/v1/demo/status', (req, res) => {
     const parentId = req.query.parentId || DEFAULT_PARENT_ID;
-    const activeIncidents = db.prepare('SELECT COUNT(*) AS c FROM incidents WHERE active = 1').get().c;
-    const latestPayout = db.prepare(`SELECT * FROM events WHERE type = 'payout' ORDER BY ts DESC LIMIT 1`).get();
+
+    const incidentRows = db
+      .prepare(`SELECT id, type, severity, ts, triage_json FROM incidents WHERE parentId = ? AND active = 1 ORDER BY ts DESC`)
+      .all(parentId);
+    const activeIncidentDetails = incidentRows.map((r) => ({
+      id: r.id,
+      type: r.type,
+      severity: r.severity,
+      ageSec: Math.round((Date.now() - r.ts) / 1000),
+      triageReason: r.triage_json ? JSON.parse(r.triage_json).reasoning : null,
+    }));
+
+    // parentId IS NULL covers cross-family events (settlement/payout are not per-incident).
+    const latestPayout = db
+      .prepare(`SELECT * FROM events WHERE type = 'payout' AND (parentId = ? OR parentId IS NULL) ORDER BY ts DESC LIMIT 1`)
+      .get(parentId);
+    const recentEvents = db
+      .prepare(`SELECT type, ts, title FROM events WHERE parentId = ? OR parentId IS NULL ORDER BY ts DESC, id DESC LIMIT 8`)
+      .all(parentId);
+
     res.json({
       parentId,
-      activeIncidents,
+      demoTimescale: parseFloat(process.env.DEMO_TIMESCALE) || 1,
+      activeIncidents: activeIncidentDetails.length,
+      activeIncidentDetails,
       latestPayout: latestPayout
         ? { title: latestPayout.title, deepLink: latestPayout.deepLink, ts: latestPayout.ts }
         : null,
+      recentEvents,
     });
   });
 

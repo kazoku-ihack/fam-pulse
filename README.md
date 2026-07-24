@@ -131,7 +131,7 @@ walkthrough succeeds end-to-end against a freshly reset local boot.
 
 ## Judge Console
 
-`GET /judge/judge.html` — a dependency-free static page with buttons for each demo scenario
+`GET /judge` (`/judge/judge.html` also works) — a dependency-free static page with buttons for each demo scenario
 plus a reset button, gated only by the optional `JUDGE_KEY` (never by `x-api-key`, which must
 never reach a browser). It calls `/v1/demo/*`, which is deliberately mounted **before** the
 `x-api-key` middleware for exactly that reason. Query params: `?family=`, `?apiBase=`,

@@ -53,7 +53,11 @@ export function createApp(db, deps = {}) {
       res.json(API_INDEX);
     }
   });
-  app.use('/judge', express.static(path.join(__dirname, '..', 'public')));
+  // `index: 'judge.html'` so the bare /judge URL (what people actually type/click) resolves —
+  // express.static's default index.html lookup would otherwise 404 past this point and fall
+  // through into apiKeyAuth below, returning a bare {"error":"UNAUTHORIZED"} for a page that's
+  // meant to be public.
+  app.use('/judge', express.static(path.join(__dirname, '..', 'public'), { index: 'judge.html' }));
 
   app.get('/openapi.json', (req, res) => res.json(openApiSpec));
   app.get('/docs', (req, res) => res.type('html').send(swaggerDocsHtml()));

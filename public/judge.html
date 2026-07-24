@@ -16,6 +16,7 @@
     --accent-text: #ffffff;
     --danger: #dc2626;
     --ok: #16a34a;
+    --warn: #d97706;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -28,6 +29,7 @@
       --accent-text: #0b1020;
       --danger: #f87171;
       --ok: #4ade80;
+      --warn: #fbbf24;
     }
   }
   * { box-sizing: border-box; }
@@ -48,8 +50,11 @@
     padding: 20px;
     margin-bottom: 16px;
   }
-  .card h2 { font-size: 0.95rem; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+  .card h2 { font-size: 0.95rem; margin: 0 0 4px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .card-hint { font-size: 0.82rem; color: var(--muted); margin: 0 0 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .scenario { display: flex; flex-direction: column; gap: 6px; }
+  .scenario p { margin: 0; font-size: 0.78rem; color: var(--muted); line-height: 1.35; }
   button {
     font: inherit;
     font-size: 0.95rem;
@@ -82,8 +87,26 @@
   a { color: var(--accent); }
   .status-line { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 0.9rem; }
   .status-line:last-child { border-bottom: none; }
-  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; }
+  .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; white-space: nowrap; }
   .pill.ok { background: color-mix(in srgb, var(--ok) 20%, transparent); color: var(--ok); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+  .pill.danger { background: color-mix(in srgb, var(--danger) 20%, transparent); color: var(--danger); }
+  .pill.neutral { background: color-mix(in srgb, var(--muted) 20%, transparent); color: var(--muted); }
+  .timescale-note { font-size: 0.82rem; color: var(--muted); margin: 0 0 14px; padding: 8px 12px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border); }
+  .empty { color: var(--muted); font-size: 0.85rem; padding: 8px 0; }
+  .incident-row {
+    padding: 10px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .incident-row:last-child { border-bottom: none; }
+  .incident-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .incident-type { font-weight: 600; font-size: 0.88rem; }
+  .incident-age { font-size: 0.78rem; color: var(--muted); }
+  .incident-reason { font-size: 0.8rem; color: var(--muted); line-height: 1.4; }
+  .feed-row { display: flex; gap: 10px; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+  .feed-row:last-child { border-bottom: none; }
+  .feed-time { color: var(--muted); font-size: 0.78rem; white-space: nowrap; padding-top: 1px; min-width: 52px; }
+  .feed-title { flex: 1; line-height: 1.35; }
   #log {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.78rem;
@@ -91,7 +114,7 @@
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 12px;
-    height: 160px;
+    height: 140px;
     overflow-y: auto;
     white-space: pre-wrap;
   }
@@ -104,39 +127,60 @@
 
   <div class="card">
     <h2>Session</h2>
+    <p class="card-hint">Pick which family's data you're driving/watching. Leave API base blank unless this console is hosted separately from the API. Judge key is only needed if this deployment set one — leave it blank otherwise.</p>
     <div class="row">
       <div>
         <label for="family">Family</label>
         <select id="family">
-          <option value="yoshiko-001">yoshiko-001 (shared)</option>
+          <option value="yoshiko-001">yoshiko-001 (shared — may have state from other judges)</option>
           <option value="yoshiko-002">yoshiko-002 (clean run)</option>
         </select>
       </div>
       <div>
         <label for="apiBase">API base</label>
-        <input id="apiBase" placeholder="same origin" />
+        <input id="apiBase" placeholder="this server" />
       </div>
       <div>
-        <label for="judgeKey">Judge key (if required)</label>
-        <input id="judgeKey" placeholder="optional" />
+        <label for="judgeKey">Judge key (optional)</label>
+        <input id="judgeKey" placeholder="leave blank unless one was given to you" />
       </div>
     </div>
   </div>
 
   <div class="card">
     <h2>Scenarios</h2>
+    <p class="card-hint" id="timescale-note">Checking demo clock speed…</p>
     <div class="grid">
-      <button id="btn-wandering">Start wandering scenario</button>
-      <button id="btn-false-alarm" class="secondary">Trigger false-alarm (charger-day)</button>
-      <button id="btn-care-reply" class="secondary">Simulate care reply now</button>
-      <button id="btn-reset" class="danger">Reset demo</button>
+      <div class="scenario">
+        <button id="btn-wandering">Start wandering scenario</button>
+        <p>Walks the parent outside the geo-fence. After the dwell threshold, Claude triages it and — unless triage says it's a routine outing — a taxi auto-dispatches. Watch "What's happening" below.</p>
+      </div>
+      <div class="scenario">
+        <button id="btn-false-alarm" class="secondary">Trigger false-alarm (charger-day)</button>
+        <p>Simulates a day with no wearable data. Claude reviews it as a possible data artifact vs. genuine decline before anything is raised to the family.</p>
+      </div>
+      <div class="scenario">
+        <button id="btn-care-reply" class="secondary">Simulate care reply now</button>
+        <p>Fast-forwards a pending care request straight to a caregiver's reply, skipping the wait for the simulated email/SMS round-trip.</p>
+      </div>
+      <div class="scenario">
+        <button id="btn-reset" class="danger">Reset demo</button>
+        <p>Wipes incidents, dispatches, and events for <strong>every</strong> judge and reseeds fresh data. Wallet/chain state is untouched.</p>
+      </div>
     </div>
   </div>
 
   <div class="card">
-    <h2>Live status</h2>
-    <div class="status-line"><span>Active incidents</span><span id="stat-incidents">—</span></div>
+    <h2>What's happening — <span id="family-label">yoshiko-001</span></h2>
+    <p class="card-hint">Live, refreshes every 2s. This is the same data the Adult Child app would show, including why Claude triaged an alert the way it did.</p>
+    <div id="incidents-list"><div class="empty">No active incidents right now.</div></div>
     <div class="status-line"><span>Latest payout</span><span id="stat-payout">—</span></div>
+  </div>
+
+  <div class="card">
+    <h2>Recent activity</h2>
+    <p class="card-hint">Last 8 events across the run (alerts, triage reasoning, dispatches, payouts).</p>
+    <div id="events-list"><div class="empty">No activity yet — try a scenario above.</div></div>
   </div>
 
   <div class="card">
@@ -146,7 +190,8 @@
   </div>
 
   <div class="card">
-    <h2>Activity log</h2>
+    <h2>Debug log</h2>
+    <p class="card-hint">Raw request/response for every button click above — useful if something looks wrong.</p>
     <div id="log"></div>
   </div>
 </div>
@@ -158,7 +203,10 @@
     family: document.getElementById('family'),
     apiBase: document.getElementById('apiBase'),
     judgeKey: document.getElementById('judgeKey'),
-    incidents: document.getElementById('stat-incidents'),
+    familyLabel: document.getElementById('family-label'),
+    timescaleNote: document.getElementById('timescale-note'),
+    incidentsList: document.getElementById('incidents-list'),
+    eventsList: document.getElementById('events-list'),
     payout: document.getElementById('stat-payout'),
     linkParent: document.getElementById('link-parent'),
     linkChild: document.getElementById('link-child'),
@@ -167,7 +215,9 @@
 
   els.family.value = qs.get('family') || localStorage.getItem('kp_family') || 'yoshiko-001';
   els.apiBase.value = qs.get('apiBase') || localStorage.getItem('kp_apiBase') || '';
+  els.apiBase.placeholder = location.origin;
   els.judgeKey.value = qs.get('judgeKey') || localStorage.getItem('kp_judgeKey') || '';
+  els.familyLabel.textContent = els.family.value;
 
   const parentApp = qs.get('parentApp') || localStorage.getItem('kp_parentApp');
   const childApp = qs.get('childApp') || localStorage.getItem('kp_childApp');
@@ -179,6 +229,8 @@
       localStorage.setItem('kp_family', els.family.value);
       localStorage.setItem('kp_apiBase', els.apiBase.value);
       localStorage.setItem('kp_judgeKey', els.judgeKey.value);
+      els.familyLabel.textContent = els.family.value;
+      refreshStatus();
     })
   );
 
@@ -189,6 +241,27 @@
 
   function apiBase() {
     return els.apiBase.value.replace(/\/$/, '') || '';
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function formatDuration(sec) {
+    if (sec < 60) return `${sec}s ago`;
+    const min = Math.round(sec / 60);
+    if (min < 60) return `${min}m ago`;
+    return `${Math.round(min / 60)}h ago`;
+  }
+
+  function timeAgo(ts) {
+    return formatDuration(Math.max(0, Math.round((Date.now() - ts) / 1000)));
+  }
+
+  function severityPillClass(severity) {
+    if (severity === 'high') return 'danger';
+    if (severity === 'medium') return 'warn';
+    return 'neutral';
   }
 
   async function callDemo(path, body) {
@@ -203,6 +276,7 @@
       } else {
         log(`✓ ${path} -> ${JSON.stringify(data)}`);
       }
+      refreshStatus();
       return data;
     } catch (e) {
       log(`✗ ${path} -> network error: ${e.message}`);
@@ -216,11 +290,44 @@
       const res = await fetch(`${apiBase()}/v1/demo/status?parentId=${encodeURIComponent(els.family.value)}`, { headers });
       if (!res.ok) return;
       const data = await res.json();
-      els.incidents.textContent = data.activeIncidents;
+
+      if (data.demoTimescale && data.demoTimescale !== 1) {
+        const realSecFor10Min = Math.round((10 * 60) / data.demoTimescale);
+        els.timescaleNote.textContent = `Demo clock runs at ${data.demoTimescale}x — a real 10-minute wandering dwell takes about ${realSecFor10Min}s here. Give a scenario that long before assuming nothing happened.`;
+      } else {
+        els.timescaleNote.textContent = 'Demo clock runs at real-time speed (1x) — a wandering dwell will take the full ~10 minutes.';
+      }
+
+      if (!data.activeIncidentDetails || data.activeIncidentDetails.length === 0) {
+        els.incidentsList.innerHTML = '<div class="empty">No active incidents right now.</div>';
+      } else {
+        els.incidentsList.innerHTML = data.activeIncidentDetails.map((inc) => `
+          <div class="incident-row">
+            <div class="incident-head">
+              <span class="incident-type">${escapeHtml(inc.type)}</span>
+              <span class="pill ${severityPillClass(inc.severity)}">${escapeHtml(inc.severity)}</span>
+              <span class="incident-age">${formatDuration(inc.ageSec)}</span>
+            </div>
+            ${inc.triageReason ? `<div class="incident-reason">${escapeHtml(inc.triageReason)}</div>` : ''}
+          </div>
+        `).join('');
+      }
+
       if (data.latestPayout) {
-        els.payout.innerHTML = `<a href="${data.latestPayout.deepLink}" target="_blank" rel="noopener">${data.latestPayout.title}</a>`;
+        els.payout.innerHTML = `<a href="${data.latestPayout.deepLink}" target="_blank" rel="noopener">${escapeHtml(data.latestPayout.title)}</a>`;
       } else {
         els.payout.textContent = 'none yet';
+      }
+
+      if (!data.recentEvents || data.recentEvents.length === 0) {
+        els.eventsList.innerHTML = '<div class="empty">No activity yet — try a scenario above.</div>';
+      } else {
+        els.eventsList.innerHTML = data.recentEvents.map((ev) => `
+          <div class="feed-row">
+            <span class="feed-time">${timeAgo(ev.ts)}</span>
+            <span class="feed-title">${escapeHtml(ev.title)}</span>
+          </div>
+        `).join('');
       }
     } catch (e) {
       /* silent — polling */

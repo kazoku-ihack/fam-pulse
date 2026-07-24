@@ -860,7 +860,7 @@ export const openApiSpec = {
     '/v1/demo/status': {
       get: {
         tags: ['Demo'],
-        summary: 'Public summary for the Judge Console (active incidents, latest payout)',
+        summary: 'Public summary for the Judge Console (active incidents + reasoning, recent activity, latest payout)',
         security: [],
         parameters: [parentIdParam],
         responses: {
@@ -868,8 +868,26 @@ export const openApiSpec = {
             type: 'object',
             properties: {
               parentId: { type: 'string' },
+              demoTimescale: { type: 'number', description: '1 = real time; e.g. 30 means 10 demo-minutes take ~20 real seconds' },
               activeIncidents: { type: 'integer' },
+              activeIncidentDetails: {
+                type: 'array',
+                items: {
+                  type: 'object',
+                  properties: {
+                    id: { type: 'string' },
+                    type: { type: 'string' },
+                    severity: { type: 'string' },
+                    ageSec: { type: 'integer' },
+                    triageReason: { type: 'string', nullable: true },
+                  },
+                },
+              },
               latestPayout: { type: 'object', nullable: true, properties: { title: { type: 'string' }, deepLink: { type: 'string' }, ts: { type: 'integer' } } },
+              recentEvents: {
+                type: 'array',
+                items: { type: 'object', properties: { type: { type: 'string' }, ts: { type: 'integer' }, title: { type: 'string' } } },
+              },
             },
           }),
         },
