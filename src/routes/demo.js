@@ -2,13 +2,15 @@ import { Router } from 'express';
 import { resetDb, DEFAULT_PARENT_ID } from '../db.js';
 import { startWanderingWalk } from '../sims/gps.js';
 import { checkFrsAlarms } from '../alarms.js';
-import { parseCareReplyEmail, applyParsedReply } from './care.js';
+import { parseCareReplyEmail, applyParsedReply, createCareRequest } from './care.js';
 import { asyncHandler } from '../asyncHandler.js';
 import { armAnthropicKey, takeAnthropicKey } from '../claude/pendingKey.js';
 
 const CANNED_REPLY =
   'Hi, this is Aiko from the care network. I can visit Thursday at 3pm for a wellness check and light ' +
   'housekeeping. Rate is 3000 yen. — Aiko M.';
+
+const DEFAULT_CARE_NEED_SUMMARY = 'Weekly wellness check-in and light housekeeping';
 
 function fallbackCannedPlan() {
   return {
@@ -88,11 +90,18 @@ export function demoRouter(db, { callJson } = {}) {
 
       case 'care-reply': {
         const { careRequestId } = req.body || {};
-        const row = careRequestId
+        let row = careRequestId
           ? db.prepare('SELECT id FROM care_requests WHERE id = ?').get(careRequestId)
           : db
               .prepare(`SELECT id FROM care_requests WHERE parentId = ? AND status = 'pending' ORDER BY slaDueTs DESC LIMIT 1`)
               .get(parentId);
+        // The Judge Console (a public static page) can never hold x-api-key, so it has no way
+        // to call POST /v1/careRequest first — this scenario has to be able to create its own
+        // pending request when one wasn't explicitly named and none exists yet.
+        if (!row && !careRequestId) {
+          const newId = await createCareRequest(db, { parentId, needSummary: DEFAULT_CARE_NEED_SUMMARY, callJson });
+          row = { id: newId };
+        }
         if (!row) return res.status(404).json({ error: 'NO_PENDING_CARE_REQUEST' });
         const result = await parseCareReplyEmail(CANNED_REPLY, { callJson, apiKey: takeAnthropicKey(parentId) });
         applyParsedReply(

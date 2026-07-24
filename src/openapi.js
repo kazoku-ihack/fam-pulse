@@ -903,7 +903,14 @@ export const openApiSpec = {
           type: 'object',
           properties: {
             parentId: { type: 'string' },
-            careRequestId: { type: 'string' },
+            careRequestId: {
+              type: 'string',
+              description:
+                "For 'care-reply' only. Omit to target the family's most recent pending care request — " +
+                'if none is pending, one is created automatically with a canned need summary (the Judge ' +
+                'Console has no x-api-key to call POST /v1/careRequest itself). Pass an explicit id to ' +
+                'target a specific request instead; a nonexistent explicit id 404s rather than auto-creating.',
+            },
             anthropicApiKey: {
               type: 'string',
               description:

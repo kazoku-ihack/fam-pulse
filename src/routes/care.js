@@ -150,6 +150,38 @@ function getOrCreateCurrentSettlement(db, parentId) {
   return row;
 }
 
+// Shared by the authenticated POST /v1/careRequest route and the public demo 'care-reply'
+// scenario (routes/demo.js), which has no x-api-key to call that route with and needs to be
+// able to create a pending request on its own when none exists yet. Returns the new id.
+export async function createCareRequest(db, { parentId, needSummary, windows = [], callJson, apiKey } = {}) {
+  const channelDecision = await selectChannel(needSummary, { callJson, apiKey });
+  const emailResult = await sendCareEmail(needSummary, windows);
+
+  const id = randomUUID();
+  const slaDueTs = Date.now() + scaledMs(4 * 60 * 60 * 1000);
+  const channelStatus = {
+    requestedChannel: channelDecision.channel,
+    executedChannel: 'email', // call channel is [STUB] for this demo
+    reasoning: channelDecision.reasoning,
+    emailSent: emailResult.sent,
+  };
+
+  db.prepare(
+    `INSERT INTO care_requests (id, parentId, needSummary, windows_json, channelStatus_json, slaDueTs, plan_json, status)
+     VALUES (?,?,?,?,?,?,NULL,'pending')`
+  ).run(id, parentId, needSummary, JSON.stringify(windows), JSON.stringify(channelStatus), slaDueTs);
+
+  appendEvent(db, {
+    parentId,
+    type: 'visit_completed',
+    title: 'Care request sent to network',
+    deepLink: `/v1/careRequest/${id}`,
+    refId: id,
+  });
+
+  return id;
+}
+
 export function careRouter(db, { callJson } = {}) {
   const router = Router();
 
@@ -159,30 +191,7 @@ export function careRouter(db, { callJson } = {}) {
     const parentId = parsed.data.parentId || getParentId(req);
     const { needSummary, windows = [] } = parsed.data;
 
-    const channelDecision = await selectChannel(needSummary, { callJson, apiKey: takeAnthropicKey(parentId) });
-    const emailResult = await sendCareEmail(needSummary, windows);
-
-    const id = randomUUID();
-    const slaDueTs = Date.now() + scaledMs(4 * 60 * 60 * 1000);
-    const channelStatus = {
-      requestedChannel: channelDecision.channel,
-      executedChannel: 'email', // call channel is [STUB] for this demo
-      reasoning: channelDecision.reasoning,
-      emailSent: emailResult.sent,
-    };
-
-    db.prepare(
-      `INSERT INTO care_requests (id, parentId, needSummary, windows_json, channelStatus_json, slaDueTs, plan_json, status)
-       VALUES (?,?,?,?,?,?,NULL,'pending')`
-    ).run(id, parentId, needSummary, JSON.stringify(windows), JSON.stringify(channelStatus), slaDueTs);
-
-    appendEvent(db, {
-      parentId,
-      type: 'visit_completed',
-      title: 'Care request sent to network',
-      deepLink: `/v1/careRequest/${id}`,
-      refId: id,
-    });
+    const id = await createCareRequest(db, { parentId, needSummary, windows, callJson, apiKey: takeAnthropicKey(parentId) });
 
     if (process.env.SIM_CARE_REPLY === '1') {
       const delay = scaledMs(60 * 1000);
