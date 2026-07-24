@@ -83,10 +83,13 @@ function buildPrompt(ctx) {
 
 // ctx: { dwellMin, distanceM, direction, localTimeIso, localHour, frsScore, frsFactors,
 //        recentOutcomes, knownSafePlaces, movingTowardSafePlace }
-export async function triageWandering(ctx, { callJson = callClaudeJson } = {}) {
+// apiKey: optional, one-time caller-supplied Anthropic key (see claude/pendingKey.js) — takes
+// priority over ANTHROPIC_API_KEY for this call only, so the operator's standing env-var key
+// (if any) never has to be exposed to public callers just to demo real Claude output.
+export async function triageWandering(ctx, { callJson = callClaudeJson, apiKey } = {}) {
   let triage;
   try {
-    if (callJson === callClaudeJson && !isClaudeConfigured()) {
+    if (callJson === callClaudeJson && !isClaudeConfigured(apiKey)) {
       triage = stubTriage(ctx);
     } else {
       const prompt = buildPrompt(ctx);
@@ -94,9 +97,15 @@ export async function triageWandering(ctx, { callJson = callClaudeJson } = {}) {
         purpose: 'wandering-triage',
         system:
           'You are a cautious eldercare monitoring assistant screening a possible wandering event. ' +
-          'Respond with strict JSON only, matching the schema exactly. No prose outside the JSON object.',
+          'Respond with ONLY a single JSON object — no markdown code fences, no prose before or after — ' +
+          'matching exactly this shape and no other fields:\n' +
+          '{"severity": "low" | "medium" | "high", ' +
+          '"falseAlarmLikelihood": <number 0 to 1>, ' +
+          '"recommendedAction": "notify_now" | "soft_check" | "dispatch_suggest", ' +
+          '"reasoning": "<one or two sentences, under 40 words>"}',
         prompt,
         schema: triageSchema,
+        apiKey,
       });
     }
   } catch (e) {

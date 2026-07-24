@@ -93,9 +93,12 @@ function buildPrompt(ctx) {
   );
 }
 
-export async function reviewFrsAlarm(ctx, { callJson = callClaudeJson } = {}) {
+// apiKey: optional, one-time caller-supplied Anthropic key (see claude/pendingKey.js) — takes
+// priority over ANTHROPIC_API_KEY for this call only, so the operator's standing env-var key
+// (if any) never has to be exposed to public callers just to demo real Claude output.
+export async function reviewFrsAlarm(ctx, { callJson = callClaudeJson, apiKey } = {}) {
   try {
-    if (callJson === callClaudeJson && !isClaudeConfigured()) {
+    if (callJson === callClaudeJson && !isClaudeConfigured(apiKey)) {
       return stubReview(ctx);
     }
     const prompt = buildPrompt(ctx);
@@ -103,9 +106,15 @@ export async function reviewFrsAlarm(ctx, { callJson = callClaudeJson } = {}) {
       purpose: 'frs-review',
       system:
         'You are screening a possible false alarm in an eldercare wellness score. ' +
-        'Respond with strict JSON only, matching the schema exactly. No prose outside the JSON object.',
+        'Respond with ONLY a single JSON object — no markdown code fences, no prose before or after — ' +
+        'matching exactly this shape and no other fields:\n' +
+        '{"decision": "raise" | "void", ' +
+        '"confidence": <number 0 to 1>, ' +
+        '"category": "genuine_decline" | "watch_not_worn" | "data_gap" | "one_off_outlier", ' +
+        '"reasoning": "<one or two sentences, under 40 words>"}',
       prompt,
       schema: frsReviewSchema,
+      apiKey,
     });
   } catch (e) {
     return { ...FAIL_SAFE };
@@ -134,8 +143,8 @@ export function applyForcedRaiseGuardrail(db, parentId, conditionType, review) {
 // Runs the full screen for a candidate LOW_FRS/INACTIVITY alarm: calls Claude, applies the
 // forced-raise guardrail, records an auditable row, and appends a feed event on void. Returns
 // the final decision so the caller can decide whether to actually raise the incident.
-export async function runFrsReview(db, { parentId, conditionType, ctx, callJson } = {}) {
-  const raw = await reviewFrsAlarm({ ...ctx, conditionType }, callJson ? { callJson } : undefined);
+export async function runFrsReview(db, { parentId, conditionType, ctx, callJson, apiKey } = {}) {
+  const raw = await reviewFrsAlarm({ ...ctx, conditionType }, { callJson, apiKey });
   const final = applyForcedRaiseGuardrail(db, parentId, conditionType, raw);
 
   const id = randomUUID();

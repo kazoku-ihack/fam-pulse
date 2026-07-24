@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { computeFRS } from './frs.js';
 import { appendEvent } from './db.js';
 import { runFrsReview } from './claude/frs-review.js';
+import { takeAnthropicKey } from './claude/pendingKey.js';
 
 function todayStartTs(now = Date.now()) {
   const d = new Date(now);
@@ -75,6 +76,7 @@ export async function checkFrsAlarms(db, parentId, { callJson } = {}) {
       conditionType: 'INACTIVITY',
       ctx: buildReviewCtx(db, parentId),
       callJson,
+      apiKey: takeAnthropicKey(parentId),
     });
     if (review.decision === 'raise') {
       await createFrsIncident(db, parentId, 'INACTIVITY', 'medium');
@@ -88,6 +90,7 @@ export async function checkFrsAlarms(db, parentId, { callJson } = {}) {
       conditionType: 'LOW_FRS',
       ctx: buildReviewCtx(db, parentId),
       callJson,
+      apiKey: takeAnthropicKey(parentId),
     });
     if (review.decision === 'raise') {
       await createFrsIncident(db, parentId, 'LOW_FRS', frs.score < 50 ? 'high' : 'medium');

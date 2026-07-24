@@ -8,11 +8,18 @@ import crypto from 'node:crypto';
 import Anthropic from '@anthropic-ai/sdk';
 
 const MODEL = 'claude-sonnet-4-6';
-const MAX_TOKENS = 1000;
-const DEFAULT_TIMEOUT_MS = 5000;
+// Both callers ask for a ~4-field JSON object with a one/two-sentence reasoning string — capped
+// low so an unbounded generation (e.g. a model ignoring the "no prose" instruction) can't run
+// long enough to blow through DEFAULT_TIMEOUT_MS.
+const MAX_TOKENS = 300;
+const DEFAULT_TIMEOUT_MS = 9000;
 
+// An explicit per-call apiKey (see claude/pendingKey.js) always wins over the env var, and is
+// never cached on the shared client — each caller-supplied key gets its own short-lived client
+// instance so keys from different callers can never cross.
 let sharedClient = null;
-function getClient() {
+function getClient(apiKey) {
+  if (apiKey) return new Anthropic({ apiKey });
   if (!process.env.ANTHROPIC_API_KEY) return null;
   if (!sharedClient) sharedClient = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
   return sharedClient;
@@ -39,8 +46,8 @@ function extractJson(text) {
 
 // callFn(client) => Promise<string raw text>. Lets callers own their own prompt construction
 // while sharing logging/timeout/retry/validation plumbing.
-async function callRaw({ purpose, system, prompt, timeoutMs }) {
-  const client = getClient();
+async function callRaw({ purpose, system, prompt, timeoutMs, apiKey }) {
+  const client = getClient(apiKey);
   const started = Date.now();
   if (!client) {
     const err = new Error('CLAUDE_UNAVAILABLE');
@@ -79,11 +86,11 @@ async function callRaw({ purpose, system, prompt, timeoutMs }) {
 // Calls Claude, parses+validates JSON against a zod schema, retries once on schema/parse
 // failure. Throws on unrecoverable failure (timeout, no API key, two bad parses) — callers
 // are responsible for the fail-safe fallback per their own guardrails.
-export async function callClaudeJson({ purpose, system, prompt, schema, timeoutMs = DEFAULT_TIMEOUT_MS }) {
+export async function callClaudeJson({ purpose, system, prompt, schema, timeoutMs = DEFAULT_TIMEOUT_MS, apiKey }) {
   let lastErr;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const text = await callRaw({ purpose, system, prompt, timeoutMs });
+      const text = await callRaw({ purpose, system, prompt, timeoutMs, apiKey });
       const json = extractJson(text);
       return schema.parse(json);
     } catch (e) {
@@ -93,8 +100,8 @@ export async function callClaudeJson({ purpose, system, prompt, schema, timeoutM
   throw lastErr;
 }
 
-export function isClaudeConfigured() {
-  return Boolean(process.env.ANTHROPIC_API_KEY);
+export function isClaudeConfigured(apiKey) {
+  return Boolean(apiKey || process.env.ANTHROPIC_API_KEY);
 }
 
 // Test-only hook: lets tests substitute a fake implementation of callClaudeJson without

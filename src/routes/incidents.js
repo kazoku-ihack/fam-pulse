@@ -8,6 +8,7 @@ import { triageWandering } from '../claude/wandering-triage.js';
 import { computeFRS } from '../frs.js';
 import { checkFrsAlarms } from '../alarms.js';
 import { createDispatchForIncident } from './dispatch.js';
+import { takeAnthropicKey } from '../claude/pendingKey.js';
 
 const trackers = new Map(); // parentId -> geofence tracker
 const TICK_MS = 2000;
@@ -109,18 +110,21 @@ async function createWanderingIncident(db, parentId, settings, geofenceEvent) {
     refId: id,
   });
 
-  const triage = await triageWandering({
-    dwellMin,
-    distanceM: Math.round(geofenceEvent.distanceM),
-    direction: geofenceEvent.direction,
-    localTimeIso: new Date(ts).toISOString(),
-    localHour,
-    frsScore: frs.score,
-    frsFactors: frs.factors,
-    recentOutcomes: recentOutcomes(db, parentId),
-    knownSafePlaces,
-    movingTowardSafePlace,
-  });
+  const triage = await triageWandering(
+    {
+      dwellMin,
+      distanceM: Math.round(geofenceEvent.distanceM),
+      direction: geofenceEvent.direction,
+      localTimeIso: new Date(ts).toISOString(),
+      localHour,
+      frsScore: frs.score,
+      frsFactors: frs.factors,
+      recentOutcomes: recentOutcomes(db, parentId),
+      knownSafePlaces,
+      movingTowardSafePlace,
+    },
+    { apiKey: takeAnthropicKey(parentId) }
+  );
 
   db.prepare('UPDATE incidents SET triage_json = ?, severity = ? WHERE id = ?').run(
     JSON.stringify(triage),

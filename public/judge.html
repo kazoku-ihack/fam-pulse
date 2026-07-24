@@ -150,6 +150,13 @@
   <div class="card">
     <h2>Scenarios</h2>
     <p class="card-hint" id="timescale-note">Checking demo clock speed…</p>
+    <div class="row" style="margin-bottom: 14px;">
+      <div>
+        <label for="anthropicKey">Anthropic key (optional — real Claude output)</label>
+        <input id="anthropicKey" type="password" autocomplete="off" placeholder="leave blank to use the stub — never sent anywhere but this scenario call" />
+      </div>
+    </div>
+    <p class="card-hint">Without a key here, triage/review runs on a local stub (no cost, no wait). Paste your own Anthropic key to get real Claude reasoning for the <em>next</em> scenario below — it's used once, never stored server-side beyond that, and never saved in this browser.</p>
     <div class="grid">
       <div class="scenario">
         <button id="btn-wandering">Start wandering scenario</button>
@@ -203,6 +210,7 @@
     family: document.getElementById('family'),
     apiBase: document.getElementById('apiBase'),
     judgeKey: document.getElementById('judgeKey'),
+    anthropicKey: document.getElementById('anthropicKey'),
     familyLabel: document.getElementById('family-label'),
     timescaleNote: document.getElementById('timescale-note'),
     incidentsList: document.getElementById('incidents-list'),
@@ -334,14 +342,20 @@
     }
   }
 
+  function scenarioBody(extra) {
+    const body = { parentId: els.family.value, ...extra };
+    if (els.anthropicKey.value) body.anthropicApiKey = els.anthropicKey.value;
+    return body;
+  }
+
   document.getElementById('btn-wandering').addEventListener('click', () =>
-    callDemo('/v1/demo/scenario/wandering', { parentId: els.family.value })
+    callDemo('/v1/demo/scenario/wandering', scenarioBody())
   );
   document.getElementById('btn-false-alarm').addEventListener('click', () =>
-    callDemo('/v1/demo/scenario/false-alarm', { parentId: els.family.value })
+    callDemo('/v1/demo/scenario/false-alarm', scenarioBody())
   );
   document.getElementById('btn-care-reply').addEventListener('click', () =>
-    callDemo('/v1/demo/scenario/care-reply', { parentId: els.family.value })
+    callDemo('/v1/demo/scenario/care-reply', scenarioBody())
   );
   document.getElementById('btn-reset').addEventListener('click', () => {
     if (confirm('Reset all demo data for every judge? This cannot be undone.')) {

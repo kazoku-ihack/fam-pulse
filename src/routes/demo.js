@@ -4,6 +4,7 @@ import { startWanderingWalk } from '../sims/gps.js';
 import { checkFrsAlarms } from '../alarms.js';
 import { parseCareReplyEmail, applyParsedReply } from './care.js';
 import { asyncHandler } from '../asyncHandler.js';
+import { armAnthropicKey, takeAnthropicKey } from '../claude/pendingKey.js';
 
 const CANNED_REPLY =
   'Hi, this is Aiko from the care network. I can visit Thursday at 3pm for a wellness check and light ' +
@@ -64,6 +65,10 @@ export function demoRouter(db, { callJson } = {}) {
 
   router.post('/v1/demo/scenario/:name', asyncHandler(async (req, res) => {
     const parentId = req.body?.parentId || DEFAULT_PARENT_ID;
+    // Optional: supply your own Anthropic key for this one scenario run instead of relying on a
+    // standing ANTHROPIC_API_KEY env var, which would otherwise spend the operator's credits for
+    // anyone hitting these public endpoints. Falls back to the stub exactly as before when omitted.
+    armAnthropicKey(parentId, req.body?.anthropicApiKey);
 
     switch (req.params.name) {
       case 'wandering': {
@@ -75,6 +80,8 @@ export function demoRouter(db, { callJson } = {}) {
         const date = new Date().toISOString().slice(0, 10);
         db.prepare('DELETE FROM metrics WHERE parentId = ? AND date = ?').run(parentId, date);
         db.prepare('DELETE FROM frs_history WHERE parentId = ? AND date = ?').run(parentId, date);
+        // checkFrsAlarms takes the armed key itself, at the point it actually calls Claude —
+        // it's also invoked from the background geofence tick, so it must own that lookup.
         const review = await checkFrsAlarms(db, parentId, { callJson });
         return res.json({ ok: true, scenario: 'false-alarm', parentId, review });
       }
@@ -87,7 +94,7 @@ export function demoRouter(db, { callJson } = {}) {
               .prepare(`SELECT id FROM care_requests WHERE parentId = ? AND status = 'pending' ORDER BY slaDueTs DESC LIMIT 1`)
               .get(parentId);
         if (!row) return res.status(404).json({ error: 'NO_PENDING_CARE_REQUEST' });
-        const result = await parseCareReplyEmail(CANNED_REPLY, callJson ? { callJson } : undefined);
+        const result = await parseCareReplyEmail(CANNED_REPLY, { callJson, apiKey: takeAnthropicKey(parentId) });
         applyParsedReply(
           db,
           row.id,

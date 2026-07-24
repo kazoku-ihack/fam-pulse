@@ -899,7 +899,21 @@ export const openApiSpec = {
         summary: 'Trigger a scripted demo scenario',
         security: [],
         parameters: [{ name: 'name', in: 'path', required: true, schema: { type: 'string', enum: ['wandering', 'false-alarm', 'care-reply'] } }],
-        requestBody: jsonBody({ type: 'object', properties: { parentId: { type: 'string' }, careRequestId: { type: 'string' } } }),
+        requestBody: jsonBody({
+          type: 'object',
+          properties: {
+            parentId: { type: 'string' },
+            careRequestId: { type: 'string' },
+            anthropicApiKey: {
+              type: 'string',
+              description:
+                'Optional. Uses your own Anthropic key for real Claude output on this one scenario run only ' +
+                '(never persisted/logged) instead of the server ANTHROPIC_API_KEY env var — which, on a public ' +
+                'demo deployment, you may not want standing and spendable by anyone hitting this endpoint. ' +
+                'Omit to keep the current stub/fail-safe behavior.',
+            },
+          },
+        }),
         responses: { 200: jsonResponse('OK', { type: 'object' }), 404: errRes('UNKNOWN_SCENARIO | NO_PENDING_CARE_REQUEST') },
       },
     },
