@@ -54,7 +54,9 @@ services:
         sync: false
       - key: PROTOSURE_RATER_URL
         sync: false
-      - key: PROTOSURE_API_TOKEN
+      - key: PROTOSURE_USERNAME
+        sync: false
+      - key: PROTOSURE_PASSWORD
         sync: false
       - key: JUDGE_KEY
         sync: false

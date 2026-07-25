@@ -34,13 +34,13 @@ const failingFetch = async () => {
 
 test('protosure mode: a successful rater response (golden-vector fixture shape) is accepted, source:"protosure"', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_USERNAME: 'u', PROTOSURE_PASSWORD: 'p' },
     () =>
       withFetch(
         async () => ({
           ok: true,
           json: async () => ({
-            calculation: {
+            raterData: {
               payload_hash: '0xc1b318da13d253576a3a51eb16289aa9ab31141cd8d3acd003049c087a77fd4d',
               signature: '0x' + '11'.repeat(65),
               signer: process.env.REGISTERED_SIGNER,
@@ -65,13 +65,13 @@ test('protosure mode: a successful rater response (golden-vector fixture shape) 
 
 test('protosure mode: a response signed by an unregistered signer is treated as unavailable and falls back', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_USERNAME: 'u', PROTOSURE_PASSWORD: 'p' },
     () =>
       withFetch(
         async () => ({
           ok: true,
           json: async () => ({
-            calculation: {
+            raterData: {
               payload_hash: '0xdeadbeef',
               signature: '0x' + '11'.repeat(65),
               signer: '0x0000000000000000000000000000000000dEaD', // not REGISTERED_SIGNER
@@ -94,7 +94,7 @@ test('protosure mode: a response signed by an unregistered signer is treated as 
 
 test('protosure mode + ATTESTATION_FALLBACK=stub: rater unreachable falls back to local stub, source stamped', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'stub', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_USERNAME: 'u', PROTOSURE_PASSWORD: 'p' },
     () =>
       withFetch(failingFetch, async () => {
         const chain = makeFakeChain();
@@ -111,7 +111,7 @@ test('protosure mode + ATTESTATION_FALLBACK=stub: rater unreachable falls back t
 
 test('protosure mode + ATTESTATION_FALLBACK=fail: rater unreachable rejects the attestation', async () => {
   await withEnv(
-    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'fail', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_API_TOKEN: 't' },
+    { ATTESTATION_MODE: 'protosure', ATTESTATION_FALLBACK: 'fail', PROTOSURE_RATER_URL: 'https://sandbox.test/sign', PROTOSURE_USERNAME: 'u', PROTOSURE_PASSWORD: 'p' },
     () =>
       withFetch(failingFetch, async () => {
         const chain = makeFakeChain();

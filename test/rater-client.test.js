@@ -18,8 +18,8 @@ const GOLDEN_FIELDS = {
 const GOLDEN_PAYLOAD_HASH = '0xc1b318da13d253576a3a51eb16289aa9ab31141cd8d3acd003049c087a77fd4d';
 const GOLDEN_SIGNER = '0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
 
-function jsonFetch(calculation, ok = true) {
-  return async () => ({ ok, status: ok ? 200 : 500, json: async () => ({ calculation }) });
+function jsonFetch(raterData, ok = true) {
+  return async () => ({ ok, status: ok ? 200 : 500, json: async () => ({ raterData }) });
 }
 
 function withRegisteredSigner(value, fn) {
@@ -30,28 +30,43 @@ function withRegisteredSigner(value, fn) {
   });
 }
 
-test('sends the eight snake_case fields and accepts a golden-vector-shaped response', async () => {
+test('sends the eight snake_case fields nested under "data", authenticates with Basic auth, and accepts a golden-vector-shaped response', async () => {
   let capturedBody;
+  let capturedHeaders;
+  const prevUser = process.env.PROTOSURE_USERNAME;
+  const prevPass = process.env.PROTOSURE_PASSWORD;
+  process.env.PROTOSURE_USERNAME = 'demo-user';
+  process.env.PROTOSURE_PASSWORD = 'demo-pass';
   const fetchImpl = async (url, opts) => {
     capturedBody = JSON.parse(opts.body);
-    return { ok: true, json: async () => ({ calculation: { payload_hash: GOLDEN_PAYLOAD_HASH, signature: '0x' + '11'.repeat(65), signer: GOLDEN_SIGNER } }) };
+    capturedHeaders = opts.headers;
+    return { ok: true, json: async () => ({ raterData: { payload_hash: GOLDEN_PAYLOAD_HASH, signature: '0x' + '11'.repeat(65), signer: GOLDEN_SIGNER, nonce: '01' } }) };
   };
-  await withRegisteredSigner(GOLDEN_SIGNER, async () => {
-    const result = await sign(GOLDEN_FIELDS, { fetchImpl });
-    assert.equal(result.payload_hash, GOLDEN_PAYLOAD_HASH);
-    assert.equal(result.signer, GOLDEN_SIGNER);
-    assert.equal(result.source, 'protosure');
-  });
+  try {
+    await withRegisteredSigner(GOLDEN_SIGNER, async () => {
+      const result = await sign(GOLDEN_FIELDS, { fetchImpl });
+      assert.equal(result.payload_hash, GOLDEN_PAYLOAD_HASH);
+      assert.equal(result.signer, GOLDEN_SIGNER);
+      assert.equal(result.nonce, '01');
+      assert.equal(result.source, 'protosure');
+    });
+  } finally {
+    process.env.PROTOSURE_USERNAME = prevUser;
+    process.env.PROTOSURE_PASSWORD = prevPass;
+  }
   assert.deepEqual(capturedBody, {
-    policy_id: 'KP-2026-001',
-    trigger_ref: 'TRG-0001',
-    coverage_code: '0x01',
-    payout_amount: '3000',
-    recipient: '0x742d35Cc6634C0532925a3b8D4C9C0f25B4f2F9a',
-    month_key: '202608',
-    contract_address: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
-    chain_id: '43113',
+    data: {
+      policy_id: 'KP-2026-001',
+      trigger_ref: 'TRG-0001',
+      coverage_code: '0x01',
+      payout_amount: '3000',
+      recipient: '0x742d35Cc6634C0532925a3b8D4C9C0f25B4f2F9a',
+      month_key: '202608',
+      contract_address: '0x5FbDB2315678afecb367f032d93F642f64180aa3',
+      chain_id: '43113',
+    },
   });
+  assert.equal(capturedHeaders.authorization, `Basic ${Buffer.from('demo-user:demo-pass').toString('base64')}`);
 });
 
 test('rejects a response signed by a signer other than REGISTERED_SIGNER', async () => {
@@ -78,7 +93,7 @@ test('rejects a signature that is not 65 bytes', async () => {
   });
 });
 
-test('rejects a malformed response missing calculation fields', async () => {
+test('rejects a malformed response missing raterData fields', async () => {
   await withRegisteredSigner(GOLDEN_SIGNER, async () => {
     await assert.rejects(
       () => sign(GOLDEN_FIELDS, { fetchImpl: async () => ({ ok: true, json: async () => ({}) }) }),

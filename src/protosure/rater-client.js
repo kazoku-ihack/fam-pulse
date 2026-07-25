@@ -4,6 +4,11 @@
 //
 // Field/response shape confirmed against the real rater's golden reference vector (see
 // FamPulse_API_Sync_Changes.md and test/protosure-stub.test.js) — not a guess.
+//
+// Wire contract verified against a live calculate_data call on 2026-07-25: the rater expects the
+// eight fields nested under a top-level "data" key, authenticates via HTTP Basic (tenant
+// username/password — no bearer token), and replies with the signed fields nested under
+// "raterData" (plus a "chartsData" object this client ignores) rather than "calculation".
 
 export class RaterUnavailableError extends Error {
   constructor(message) {
@@ -17,6 +22,12 @@ function sigByteLength(sig) {
   return hex.length / 2;
 }
 
+function basicAuthHeader() {
+  const user = process.env.PROTOSURE_USERNAME || '';
+  const pass = process.env.PROTOSURE_PASSWORD || '';
+  return `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+}
+
 // fields: { policyId, triggerRef, coverageCode, payoutAmount, recipient, monthKey, contractAddress, chainId }
 async function signOnce(fields, fetchImpl, timeoutMs) {
   const controller = new AbortController();
@@ -26,17 +37,19 @@ async function signOnce(fields, fetchImpl, timeoutMs) {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        authorization: `Bearer ${process.env.PROTOSURE_API_TOKEN}`,
+        authorization: basicAuthHeader(),
       },
       body: JSON.stringify({
-        policy_id: fields.policyId,
-        trigger_ref: fields.triggerRef,
-        coverage_code: fields.coverageCode,
-        payout_amount: String(fields.payoutAmount),
-        recipient: fields.recipient,
-        month_key: String(fields.monthKey),
-        contract_address: fields.contractAddress,
-        chain_id: String(fields.chainId),
+        data: {
+          policy_id: fields.policyId,
+          trigger_ref: fields.triggerRef,
+          coverage_code: fields.coverageCode,
+          payout_amount: String(fields.payoutAmount),
+          recipient: fields.recipient,
+          month_key: String(fields.monthKey),
+          contract_address: fields.contractAddress,
+          chain_id: String(fields.chainId),
+        },
       }),
       signal: controller.signal,
     });
@@ -47,7 +60,7 @@ async function signOnce(fields, fetchImpl, timeoutMs) {
   }
 }
 
-// Returns { payload_hash, signature, signer, source: 'protosure' }, or throws
+// Returns { payload_hash, signature, signer, nonce, source: 'protosure' }, or throws
 // RaterUnavailableError — callers (routes/attestation.js) fall back to protosure/stub.js per
 // ATTESTATION_FALLBACK, stamping the source themselves.
 export async function sign(fields, { fetchImpl = fetch, timeoutMs = 5000 } = {}) {
@@ -62,9 +75,9 @@ export async function sign(fields, { fetchImpl = fetch, timeoutMs = 5000 } = {})
     }
   }
 
-  const calc = body?.calculation;
+  const calc = body?.raterData;
   if (!calc || typeof calc.signature !== 'string' || typeof calc.payload_hash !== 'string' || typeof calc.signer !== 'string') {
-    throw new RaterUnavailableError('malformed rater response — missing calculation.{payload_hash,signature,signer}');
+    throw new RaterUnavailableError('malformed rater response — missing raterData.{payload_hash,signature,signer}');
   }
   const registeredSigner = String(process.env.REGISTERED_SIGNER || '').toLowerCase();
   if (calc.signer.toLowerCase() !== registeredSigner) {
@@ -74,5 +87,5 @@ export async function sign(fields, { fetchImpl = fetch, timeoutMs = 5000 } = {})
     throw new RaterUnavailableError('rater signature is not 65 bytes');
   }
 
-  return { payload_hash: calc.payload_hash, signature: calc.signature, signer: calc.signer, source: 'protosure' };
+  return { payload_hash: calc.payload_hash, signature: calc.signature, signer: calc.signer, nonce: calc.nonce, source: 'protosure' };
 }
