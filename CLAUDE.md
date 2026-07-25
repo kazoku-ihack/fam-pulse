@@ -120,3 +120,25 @@ helpers), `public/judge.html` (Judge Console), `test/*` (`node --test`, fully of
   `CHAIN_NOT_CONFIGURED`, etc.) rather than a generic error when a feature is unconfigured.
 - `npm test` and `npm run test:chain` (after `npm run compile`) should both stay green; the
   README's "8-scene demo runbook" is the end-to-end acceptance check for demo-facing changes.
+
+## Knowledge base (`knowledge.md`)
+
+`knowledge.md` is a living record of business-logic learnings — confirmed facts, gotchas, and
+decisions about *how the domain actually works* that aren't obvious from reading the code once
+(payout schedule/cap/cool-down rules, the signature digest construction, the Protosure wire
+contract's field shapes, fail-safe/fallback semantics, geo-fence propagation behavior, etc.). It's
+separate from this file's static architecture map, and it's expected to keep growing.
+
+- **Before implementing a feature or fixing a bug that touches business logic** (payouts,
+  attestation/signing, coverage/cap rules, geo-fence, care/settlement flows, Claude-driven
+  triage/review), read `knowledge.md` first and keep new code consistent with what's recorded
+  there — don't re-derive or contradict an already-confirmed rule.
+- **Whenever you learn something new and non-obvious about the application** during a task — a
+  business rule not evident from the code, a confirmed external-integration contract, a gotcha or
+  bug you had to work around, a fail-safe/fallback decision and its rationale — append it to the
+  relevant section of `knowledge.md` (or add a new section) before finishing the task. Keep
+  entries concise, cite the file(s) involved, and date anything that could later drift (e.g. a
+  wire contract confirmed against a live external call).
+- Don't duplicate this file's Architecture section here (file layout, module responsibilities —
+  those are structural and derivable by reading the code); `knowledge.md` is for domain knowledge
+  that took real investigation or a live verification to pin down.
