@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { appendEvent } from '../db.js';
+import { requireRole } from '../auth.js';
 import { validateRules, FIXED_SCHEDULE } from '../attestation-rules.js';
 import { COVERAGE_CODE, TRIGGER_CODES } from '../coverage.js';
 import { signTrigger as stubSign, StubSignerNotConfiguredError } from '../protosure/stub.js';
@@ -154,7 +155,7 @@ async function createAttestation(db, chain, { policyId, triggerCode, recipient, 
 export function attestationRouter(db, { chain = chainDefault } = {}) {
   const router = Router();
 
-  router.post('/v1/attestation/trigger', asyncHandler(async (req, res) => {
+  router.post('/v1/attestation/trigger', requireRole('adult_child'), asyncHandler(async (req, res) => {
     const parsed = triggerSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const { policyId, triggerCode, recipient, incidentId, triggerRef, payoutAmount, parentId, eventTimestamp } = parsed.data;
@@ -186,7 +187,7 @@ export function attestationRouter(db, { chain = chainDefault } = {}) {
     res.json(rowToAttestation(row));
   });
 
-  router.post('/v1/attestation/settlement/batch', asyncHandler(async (req, res) => {
+  router.post('/v1/attestation/settlement/batch', requireRole('adult_child'), asyncHandler(async (req, res) => {
     const { settlementId, recipient, parentId } = req.body || {};
     if (!settlementId || !recipient) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'settlementId and recipient are required' });

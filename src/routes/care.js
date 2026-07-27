@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import nodemailer from 'nodemailer';
 import { appendEvent, getParentId } from '../db.js';
+import { requireRole } from '../auth.js';
 import { callClaudeJson } from '../claude/client.js';
 import { takeAnthropicKey } from '../claude/pendingKey.js';
 import { asyncHandler } from '../asyncHandler.js';
@@ -212,7 +213,7 @@ export function careRouter(db, { callJson } = {}) {
     res.json(row);
   });
 
-  router.patch('/v1/carePlan/:id', (req, res) => {
+  router.patch('/v1/carePlan/:id', requireRole('adult_child'), (req, res) => {
     const { action } = req.body || {};
     if (!['approve', 'clarify'].includes(action)) {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'action must be approve|clarify' });

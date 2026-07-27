@@ -79,3 +79,46 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
 - `configVersion` is bumped on every `PATCH /v1/policy/monitoringConfig` and threaded through every
   telemetry frame (including the `sharingEnabled:false` short frame) so the Parent app can detect
   a stale config and re-fetch, rather than polling on a timer.
+
+## Device activation & household identity (`src/routes/activation.js`, `src/auth.js`, `src/db.js`)
+
+- **`householdId` and `parentId` are 1:1 and interchangeable for this demo.** Every parentId-keyed
+  table (`metrics`, `frs_history`, `incidents`, `care_requests`, `settlements`) got an additional,
+  denormalized `householdId` column (backfilled `= parentId`), but `parentId` itself was never
+  removed and no existing route's SQL was rewritten to filter on `householdId`. The seed
+  household's `householdId` literally reuses the `DEFAULT_PARENT_ID` string (`yoshiko-001`) so the
+  mapping needs no lookup table. If a future feature ever needs a household with *multiple* insured
+  parents, this 1:1 assumption breaks and `getParentId`/`req.household.parentId` would need to
+  become a real one-to-many resolution — it currently is not.
+- **`requireDevice` (src/auth.js) is additive, not a replacement for query/body `parentId`.** A
+  request with no `Authorization: Bearer <deviceToken>` header behaves exactly as it did before
+  activation existed (`getParentId` falls through to `req.query.parentId` → `DEFAULT_PARENT_ID`).
+  This was a deliberate choice to avoid rewriting every route's scoping logic and to keep the
+  entire pre-activation test suite and demo runbook green — do not assume every route requires a
+  device token; only the routes gated by `requireRole(...)` reject on a *wrong* role, and only when
+  a token is actually presented.
+- **Protosure policy-verification auth is unconfirmed.** `src/protosure/policy-verify.js` uses
+  bearer `PROTOSURE_API_TOKEN` per the activation build plan's spec, but the *existing* rater
+  endpoint (`calculate_data`) was originally specced the same bearer-token way and turned out, once
+  verified against a live call, to use HTTP Basic auth instead (see the "Protosure rater wire
+  contract" section above). This exact assumption has already been wrong once for a sibling
+  endpoint — treat the bearer-token auth and the `FIELD_MAP` response field names in
+  `policy-verify.js` as unconfirmed guesses, and re-verify both against a live Protosure call
+  before trusting them, same as the rater endpoint's lesson.
+- **Reconciliation is a wiring stub, not a live integration.** `reconcileHousehold()` in
+  `activation.js` is guarded behind `ACTIVATION_MODE=protosure` and called from a periodic
+  `setInterval` in `server.js`, but it currently only logs — there is no confirmed Protosure
+  contract for "look up a policy by customerId alone" (the four original credentials are
+  deliberately never retained past the verify call, per the "never store raw DOB/phone/email"
+  rule, so a full re-verify isn't possible for a background job). Implement the real call here once
+  that contract exists; don't assume it already reconciles anything today.
+- **Masked DOB is a constant placeholder, not a partial real date.** `GET /v1/household/:id`
+  returns `insuredDobMasked: '**-**-**'` always — the raw DOB is never stored (only
+  `insuredDobHash`, a one-way HMAC), so there are no real digits available to partially reveal.
+- Device tokens are opaque HMAC-SHA256 strings (`node:crypto`, no JWT library), verified by
+  looking up `sha256(token)` against `devices.deviceTokenHash` — the HMAC at generation time binds
+  the token to its `deviceId` but isn't re-derived at auth time, it's a lookup-by-hash.
+- The activation lock (R-21) uses a single `ACTIVATION_LOCK_MINUTES` knob as both the
+  failure-counting window and the lock duration (a sliding window), rather than the build plan's
+  separate "trailing hour" count vs. lock-duration language — simpler and the lock still
+  naturally "expires" once the oldest counted failure ages out of that same window.

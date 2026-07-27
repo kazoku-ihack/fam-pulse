@@ -32,6 +32,14 @@ depends on a live network call. Flip on real credentials in `.env` to light up:
 | `REGISTERED_SIGNER` + `PROTOSURE_RATER_URL` + `PROTOSURE_API_TOKEN` | Real Protosure rater signing when `ATTESTATION_MODE=protosure`. The rater's response is only accepted if `calculation.signer` matches `REGISTERED_SIGNER` and the signature is 65 bytes. Unreachable/invalid → falls back per `ATTESTATION_FALLBACK`, stamping `source:"stub-fallback"` (surfaced to judges, not hidden). |
 | `FUJI_RPC` + `JPYC_ADDR` + `PAYOUT_ADDR` + `CHAIN_ID` | Real on-chain reads/writes (`/v1/wallet/balance`, `/v1/jpyc/transfer`, `/v1/jpyc/batchTransfer`). Deploy first via `chain/deploy.js`. Unset → `503 CHAIN_NOT_CONFIGURED` on transfer, `configured:false` on balance. |
 | `SMTP_URL` / `IMAP_URL` | Real care-request email send / reply polling. Unset → logged only; use `SIM_CARE_REPLY=1` or the Judge Console's "Simulate care reply now" button to rehearse offline. |
+| `PROTOSURE_BASE_URL` + `PROTOSURE_API_TOKEN` | Real Protosure policy-verification when `ACTIVATION_MODE=protosure` (`POST /v1/activation/verify`). Unset/unreachable → `502 PROTOSURE_UNAVAILABLE`, fails closed (no household/device/activation row is ever written on an upstream failure). |
+
+**Device activation is additive, not required.** `POST /v1/activation/verify` → `POST
+/v1/activation/complete` issues an opaque `deviceToken` that scopes a request to its household and
+enforces parent/adult_child role gating (the parent role never receives a numeric FRS). A request
+with no `Authorization: Bearer <deviceToken>` header — every existing curl command in this README
+included — behaves exactly as it did before activation existed. Fixture credentials for both demo
+households are in the Judge Console's "Activation fixture credentials" card.
 
 **Claude output never gates a payout.** `src/routes/attestation.js`, `src/routes/payments.js`,
 `src/protosure/*`, and `src/chain/*` import nothing from `src/claude/*`. Triage and FRS review

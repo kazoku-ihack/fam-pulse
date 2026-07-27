@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getSettings, saveSettings, getParentId, appendEvent } from '../db.js';
+import { requireRole } from '../auth.js';
 
 const chipsSchema = z.object({
   careNetwork: z.enum(['auto', 'manual']).optional(),
@@ -43,7 +44,7 @@ export function settingsRouter(db) {
     res.json(getSettings(db, parentId));
   });
 
-  router.patch('/v1/settings', (req, res) => {
+  router.patch('/v1/settings', requireRole('adult_child'), (req, res) => {
     const parsed = settingsPatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const parentId = parsed.data.parentId || getParentId(req);
@@ -59,7 +60,7 @@ export function settingsRouter(db) {
     res.json(monitoringConfigView(getSettings(db, parentId)));
   });
 
-  router.patch('/v1/policy/monitoringConfig', (req, res) => {
+  router.patch('/v1/policy/monitoringConfig', requireRole('adult_child'), (req, res) => {
     const parsed = monitoringConfigSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const parentId = parsed.data.parentId || getParentId(req);

@@ -21,13 +21,15 @@ export function frsRouter(db) {
       .prepare(`SELECT dailySteps, sleepHours, heartRateResting FROM metrics WHERE parentId = ? AND date = ?`)
       .get(parentId, date);
 
-    if (!todayRow) {
-      const frs = computeFRS({ today: null });
-      return res.json(frs);
-    }
+    const frs = todayRow
+      ? computeFRS({ today: todayRow, historySteps: priorHistorySteps(db, parentId, date) })
+      : computeFRS({ today: null });
 
-    const historySteps = priorHistorySteps(db, parentId, date);
-    const frs = computeFRS({ today: todayRow, historySteps });
+    // The parent role never receives the numeric FRS — enforced here, not trusted to any client.
+    if (req.household?.role === 'parent') {
+      const { score, factors, ...redacted } = frs;
+      return res.json(redacted);
+    }
     res.json(frs);
   });
 

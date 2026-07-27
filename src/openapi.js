@@ -12,6 +12,69 @@ const Error_ = {
   required: ['error'],
 };
 
+const ActivationVerifyResult = {
+  type: 'object',
+  properties: {
+    activationId: { type: 'string' },
+    customerId: { type: 'string', example: 'CUST-DEMO-001' },
+    originalQuoteId: { type: 'string' },
+    smartContractId: { type: 'string' },
+    householdId: { type: 'string' },
+    policyStatus: { type: 'string', example: 'in_force' },
+    insuredDisplayName: { type: 'string' },
+    coverages: { type: 'array', items: { type: 'string' } },
+    deviceToken: { type: 'string', nullable: true, description: 'always null here — issued only by POST /v1/activation/complete' },
+  },
+};
+
+const ActivationCompleteResult = {
+  type: 'object',
+  properties: {
+    householdId: { type: 'string' },
+    role: { type: 'string', enum: ['parent', 'adult_child'] },
+    deviceToken: { type: 'string', description: 'opaque bearer token — present exactly once, never retrievable again' },
+    nextScreen: { type: 'string', example: 'W-08' },
+  },
+};
+
+const ActivationStatus = {
+  type: 'object',
+  properties: {
+    state: { type: 'string', enum: ['unactivated', 'active', 'revoked'] },
+    role: { type: 'string', enum: ['parent', 'adult_child'] },
+    householdId: { type: 'string' },
+  },
+};
+
+const Household = {
+  type: 'object',
+  properties: {
+    householdId: { type: 'string' },
+    customerId: { type: 'string' },
+    originalQuoteId: { type: 'string' },
+    smartContractId: { type: 'string' },
+    policyNumber: { type: 'string' },
+    policyStatus: { type: 'string' },
+    insuredDisplayName: { type: 'string' },
+    insuredDobMasked: { type: 'string', example: '**-**-**' },
+    devices: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          deviceId: { type: 'string' },
+          role: { type: 'string', enum: ['parent', 'adult_child'] },
+          lastSeen: { type: 'integer' },
+          activatedAt: { type: 'integer' },
+        },
+      },
+    },
+    geofenceConfigured: { type: 'boolean' },
+    consentGranted: { type: 'boolean' },
+    configVersion: { type: 'integer' },
+  },
+};
+
 const FRSResult = {
   type: 'object',
   properties: {
@@ -347,6 +410,10 @@ export const openApiSpec = {
     },
     schemas: {
       Error: Error_,
+      ActivationVerifyResult,
+      ActivationCompleteResult,
+      ActivationStatus,
+      Household,
       FRSResult,
       MetricsInput,
       MetricsRow,
@@ -369,6 +436,7 @@ export const openApiSpec = {
   },
   tags: [
     { name: 'System', description: 'Health, discovery — no auth' },
+    { name: 'Activation', description: 'First-launch device activation + household identity' },
     { name: 'FRS', description: 'Family Reassurance Score wellness pipeline' },
     { name: 'HealthKit', description: 'Wearable metrics ingest' },
     { name: 'Incidents', description: 'Wandering / SOS / LOW_FRS / INACTIVITY' },
@@ -405,6 +473,68 @@ export const openApiSpec = {
         summary: 'This OpenAPI document',
         security: [],
         responses: { 200: { description: 'OpenAPI 3.0 JSON' } },
+      },
+    },
+
+    '/v1/activation/verify': {
+      post: {
+        tags: ['Activation'],
+        summary: 'Verify insured credentials against Protosure and start an activation (uniform AUTH_NO_MATCH on any mismatch — R-20)',
+        requestBody: {
+          required: true,
+          ...jsonBody(
+            {
+              type: 'object',
+              required: ['role', 'policyNumber', 'insuredDob', 'phone', 'email', 'deviceId'],
+              properties: {
+                role: { type: 'string', enum: ['parent', 'adult_child'] },
+                policyNumber: { type: 'string' },
+                insuredDob: { type: 'string', description: 'the INSURED (parent)\'s DOB, strict YYYY-MM-DD', example: '1948-03-12' },
+                phone: { type: 'string' },
+                email: { type: 'string' },
+                deviceId: { type: 'string' },
+              },
+            },
+            { role: 'adult_child', policyNumber: 'KP-2026-001', insuredDob: '1948-03-12', phone: '+819012345678', email: 'sakura.tanaka@example.jp', deviceId: 'device-abc' }
+          ),
+        },
+        responses: {
+          200: jsonResponse('Matched', ActivationVerifyResult),
+          401: errRes('AUTH_NO_MATCH — identical body/timing regardless of which field failed or whether the policy exists'),
+          423: errRes('ACTIVATION_LOCKED — too many recent failures for this policyNumber or IP; body includes retryAfter (seconds)'),
+          502: errRes('PROTOSURE_UNAVAILABLE — fails closed, no rows written'),
+        },
+      },
+    },
+    '/v1/activation/complete': {
+      post: {
+        tags: ['Activation'],
+        summary: 'Bind a device to a verified activation and issue its deviceToken (revokes any prior device for the same householdId+role)',
+        requestBody: jsonBody({
+          type: 'object',
+          required: ['activationId', 'deviceId'],
+          properties: { activationId: { type: 'string' }, deviceId: { type: 'string' }, pushToken: { type: 'string' } },
+        }),
+        responses: {
+          200: jsonResponse('Activated', ActivationCompleteResult),
+          409: errRes('ACTIVATION_NOT_VERIFIED or ACTIVATION_EXPIRED'),
+        },
+      },
+    },
+    '/v1/activation/status': {
+      get: {
+        tags: ['Activation'],
+        summary: 'Resume-without-reauthenticating check for a relaunched app',
+        parameters: [{ name: 'deviceId', in: 'query', required: true, schema: { type: 'string' } }],
+        responses: { 200: jsonResponse('OK', ActivationStatus) },
+      },
+    },
+    '/v1/household/{id}': {
+      get: {
+        tags: ['Activation'],
+        summary: 'Shared household state both apps read (identifiers, policy status, masked DOB, device list, config)',
+        parameters: [idParam()],
+        responses: { 200: jsonResponse('OK', Household), 404: errRes('NOT_FOUND') },
       },
     },
 

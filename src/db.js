@@ -152,7 +152,64 @@ function migrate(db) {
       deepLink TEXT,
       refId TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS households (
+      householdId TEXT PRIMARY KEY,
+      customerId TEXT UNIQUE,
+      originalQuoteId TEXT,
+      smartContractId TEXT,
+      policyNumber TEXT,
+      policyStatus TEXT,
+      insuredDisplayName TEXT,
+      insuredDobHash TEXT,
+      coveragesJson TEXT,
+      createdAt INTEGER,
+      lastReconciledAt INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS devices (
+      deviceId TEXT PRIMARY KEY,
+      householdId TEXT NOT NULL,
+      role TEXT NOT NULL,
+      deviceTokenHash TEXT,
+      pushToken TEXT,
+      activatedAt INTEGER,
+      lastSeen INTEGER,
+      revokedAt INTEGER
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS devices_household_role_active
+      ON devices(householdId, role) WHERE revokedAt IS NULL;
+
+    CREATE TABLE IF NOT EXISTS activations (
+      activationId TEXT PRIMARY KEY,
+      deviceId TEXT,
+      role TEXT,
+      householdId TEXT,
+      state TEXT NOT NULL,
+      createdAt INTEGER,
+      expiresAt INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS activation_attempts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      policyNumberHash TEXT,
+      deviceId TEXT,
+      ip TEXT,
+      outcome TEXT,
+      ts INTEGER
+    );
   `);
+
+  // householdId is a new, denormalized column added alongside the existing parentId on the
+  // parentId-keyed tables — parentId itself is never touched. better-sqlite3/SQLite has no
+  // `ADD COLUMN IF NOT EXISTS`, so guard each addition with a PRAGMA table_info check.
+  for (const table of ['metrics', 'frs_history', 'incidents', 'care_requests', 'settlements']) {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+    if (!cols.some((c) => c.name === 'householdId')) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN householdId TEXT`);
+    }
+  }
 }
 
 export function appendEvent(db, { parentId = null, type, title, deepLink = null, refId = null, ts = Date.now() }) {
@@ -169,6 +226,10 @@ export function isEmpty(db) {
 // Wipes demo data but never touches `wallets` (chain contract addresses persist across resets)
 // or `cap_ledger` (mirrors on-chain monthSpend, which a demo reset never touches either — wiping
 // the local ledger but not the chain would let the pre-check drift out of sync with reality).
+// `households` is likewise never wiped — same rationale: the customerId/household identity is
+// meant to persist across a demo reset so judges don't have to re-activate from scratch every
+// time, they only need `devices`/`activations`/`activation_attempts` cleared so activation can be
+// re-run.
 const WIPE_TABLES = [
   'metrics',
   'frs_history',
@@ -180,6 +241,9 @@ const WIPE_TABLES = [
   'attestations',
   'settings',
   'events',
+  'devices',
+  'activations',
+  'activation_attempts',
 ];
 
 export function wipe(db) {
@@ -349,6 +413,31 @@ export function seed(db) {
     deepLink: '/v1/settlement/current',
     refId: 'settlement-2026-06',
   });
+
+  // Seed household: householdId reuses the DEFAULT_PARENT_ID literal so the demo's
+  // parentId <-> householdId mapping is trivially 1:1 — no separate lookup table needed for the
+  // existing single-household-per-parent demo shape.
+  db.prepare(
+    `INSERT OR IGNORE INTO households
+       (householdId, customerId, originalQuoteId, smartContractId, policyNumber, policyStatus, insuredDisplayName, insuredDobHash, coveragesJson, createdAt, lastReconciledAt)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+  ).run(
+    DEFAULT_PARENT_ID,
+    'CUST-DEMO-001',
+    'QT-2026-000481',
+    'SC-FUJI-0001',
+    'KP-2026-001',
+    'in_force',
+    'Sakura Tanaka',
+    null,
+    JSON.stringify([]),
+    Date.now(),
+    null
+  );
+
+  for (const table of ['metrics', 'frs_history', 'incidents', 'care_requests', 'settlements']) {
+    db.prepare(`UPDATE ${table} SET householdId = parentId WHERE householdId IS NULL`).run();
+  }
 }
 
 export function seedIfEmpty(db) {
@@ -360,8 +449,12 @@ export function resetDb(db) {
   seed(db);
 }
 
+// req.household is set by requireDevice (src/auth.js) when a valid device token is presented —
+// it wins over any client-supplied parentId so a device can't spoof another household's data.
+// Falls back to today's query/body param behavior when no device token is presented, keeping
+// every pre-activation demo/test workflow unchanged.
 export function getParentId(req) {
-  return req.query.parentId || req.body?.parentId || DEFAULT_PARENT_ID;
+  return req.household?.parentId || req.query.parentId || req.body?.parentId || DEFAULT_PARENT_ID;
 }
 
 export function getSettings(db, parentId) {

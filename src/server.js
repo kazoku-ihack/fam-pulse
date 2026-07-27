@@ -7,7 +7,8 @@ import { fileURLToPath } from 'node:url';
 import swaggerUiDist from 'swagger-ui-dist';
 
 import { openDb, seedIfEmpty, resetDb } from './db.js';
-import { apiKeyAuth, judgeKeyAuth } from './auth.js';
+import { apiKeyAuth, judgeKeyAuth, requireDevice } from './auth.js';
+import { activationRouter, reconcileHousehold } from './routes/activation.js';
 import { healthkitRouter } from './routes/healthkit.js';
 import { frsRouter } from './routes/frs.js';
 import { incidentsRouter, startGeofenceTick } from './routes/incidents.js';
@@ -74,7 +75,11 @@ export function createApp(db, deps = {}) {
   app.use(judgeKeyAuth, demoRouter(db, deps.demo));
 
   app.use(apiKeyAuth);
+  // Additive on top of apiKeyAuth — resolves an optional device token into req.household so
+  // routes can be household-scoped/role-gated; a request with no token behaves exactly as before.
+  app.use(requireDevice(db));
 
+  app.use(activationRouter(db));
   app.use(healthkitRouter(db));
   app.use(frsRouter(db));
   app.use(incidentsRouter(db));
@@ -114,6 +119,15 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       console.log('auto-reset: reseeding demo data');
       resetDb(db);
     }, ms).unref();
+  }
+
+  if (process.env.ACTIVATION_MODE === 'protosure') {
+    setInterval(() => {
+      const households = db.prepare('SELECT householdId FROM households').all();
+      for (const { householdId } of households) {
+        reconcileHousehold(db, householdId).catch((e) => console.error('reconcile error', e));
+      }
+    }, 60 * 60 * 1000).unref();
   }
 
   startGeofenceTick(db);

@@ -15,6 +15,10 @@ process.env.STUB_SIGNER_PRIVATE_KEY = '4c0883a69102937d6231471b5dbb6204fe5129617
 process.env.REGISTERED_SIGNER = process.env.REGISTERED_SIGNER || '0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
 process.env.PAYOUT_ADDR = process.env.PAYOUT_ADDR || '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 process.env.CHAIN_ID = process.env.CHAIN_ID || '43113';
+// Same rationale as ATTESTATION_MODE above: force stub activation regardless of a developer's
+// local ACTIVATION_MODE=protosure, so the offline suite never depends on live Protosure reachability.
+process.env.ACTIVATION_MODE = 'stub';
+process.env.DEVICE_TOKEN_SECRET = process.env.DEVICE_TOKEN_SECRET || 'test-device-token-secret';
 
 export const API_KEY = process.env.API_KEY;
 

@@ -7,7 +7,7 @@ export const API_INDEX = {
   openApiSpec: '/openapi.json',
   repo: 'https://github.com/kazoku-ihack/fam-pulse#readme',
   judgeConsole: '/judge',
-  note: 'Every route below requires header "x-api-key: <your key>" except the ones marked public. Full request/response schemas: /docs.',
+  note: 'Every route below requires header "x-api-key: <your key>" except the ones marked public. An optional "Authorization: Bearer <deviceToken>" (from POST /v1/activation/complete) scopes a request to its household and enforces parent/adult_child role gating; omitted, routes behave exactly as before activation existed. Full request/response schemas: /docs.',
   routes: [
     { method: 'GET', path: '/health', auth: 'public' },
     { method: 'GET', path: '/judge', auth: 'public', description: 'Judge Console (static page; /judge/judge.html also works)' },
@@ -15,6 +15,11 @@ export const API_INDEX = {
     { method: 'POST', path: '/v1/demo/reset', auth: 'public (or JUDGE_KEY if set)' },
     { method: 'POST', path: '/v1/demo/scenario/:name', auth: 'public (or JUDGE_KEY if set)', description: 'name = wandering | false-alarm | care-reply' },
     { method: 'POST', path: '/v1/webhooks/uber', auth: 'HMAC signature (x-uber-signature), not x-api-key' },
+
+    { method: 'POST', path: '/v1/activation/verify', auth: 'x-api-key', description: 'body: { role, policyNumber, insuredDob, phone, email, deviceId }' },
+    { method: 'POST', path: '/v1/activation/complete', auth: 'x-api-key', description: 'body: { activationId, deviceId, pushToken? } — issues the deviceToken' },
+    { method: 'GET', path: '/v1/activation/status', auth: 'x-api-key', description: 'query: deviceId' },
+    { method: 'GET', path: '/v1/household/:id', auth: 'x-api-key' },
 
     { method: 'POST', path: '/v1/healthkit/metrics', auth: 'x-api-key' },
     { method: 'GET', path: '/v1/healthkit/metrics', auth: 'x-api-key' },

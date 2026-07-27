@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
-import { appendEvent, getSettings, DEFAULT_PARENT_ID, SECOND_PARENT_ID } from '../db.js';
+import { appendEvent, getSettings, getParentId, DEFAULT_PARENT_ID, SECOND_PARENT_ID } from '../db.js';
 import { createGeofenceTracker, distanceMeters, dwellThresholdMs } from '../geofence.js';
 import { currentPosition } from '../sims/gps.js';
 import { triageWandering } from '../claude/wandering-triage.js';
@@ -9,6 +9,7 @@ import { computeFRS } from '../frs.js';
 import { checkFrsAlarms } from '../alarms.js';
 import { createDispatchForIncident } from './dispatch.js';
 import { takeAnthropicKey } from '../claude/pendingKey.js';
+import { requireRole } from '../auth.js';
 
 const trackers = new Map(); // parentId -> geofence tracker
 const TICK_MS = 2000;
@@ -227,10 +228,18 @@ async function tickParent(db, parentId) {
   await checkFrsAlarms(db, parentId).catch((e) => console.error('frs alarm check error', e));
 }
 
+function activeHouseholdIds(db) {
+  // householdId === parentId for the demo's 1:1 mapping (see db.js seed()). Falls back to the
+  // two hard-coded demo constants only if the households table is empty (e.g. a fresh :memory:
+  // db used before seed() has run), so tests that open the db without seeding don't break.
+  const rows = db.prepare('SELECT householdId FROM households').all();
+  return rows.length > 0 ? rows.map((r) => r.householdId) : [DEFAULT_PARENT_ID, SECOND_PARENT_ID];
+}
+
 export function startGeofenceTick(db) {
   if (tickHandle) clearInterval(tickHandle);
   tickHandle = setInterval(() => {
-    for (const parentId of [DEFAULT_PARENT_ID, SECOND_PARENT_ID]) {
+    for (const parentId of activeHouseholdIds(db)) {
       tickParent(db, parentId).catch((e) => console.error('geofence tick error', e));
     }
   }, TICK_MS);
@@ -253,7 +262,7 @@ export function incidentsRouter(db) {
   const router = Router();
 
   router.get('/v1/incidents', (req, res) => {
-    const parentId = req.query.parentId || DEFAULT_PARENT_ID;
+    const parentId = getParentId(req);
     let rows;
     if (req.query.active === undefined) {
       rows = db.prepare('SELECT * FROM incidents WHERE parentId = ? ORDER BY ts DESC').all(parentId);
@@ -296,10 +305,10 @@ export function incidentsRouter(db) {
     res.json(parseIncident(db.prepare('SELECT * FROM incidents WHERE id = ?').get(row.id)));
   });
 
-  router.post('/v1/sos', (req, res) => {
+  router.post('/v1/sos', requireRole('parent'), (req, res) => {
     const parsed = sosSchema.safeParse(req.body || {});
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
-    const parentId = parsed.data.parentId || DEFAULT_PARENT_ID;
+    const parentId = getParentId(req);
     const settings = getSettings(db, parentId);
     const pos =
       parsed.data.lat != null && parsed.data.lng != null

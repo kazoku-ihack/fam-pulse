@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { getSettings, saveSettings, getParentId, appendEvent } from '../db.js';
+import { requireRole } from '../auth.js';
 
 const consentSchema = z.object({
   parentId: z.string().optional(),
@@ -21,7 +22,7 @@ export function parentRouter(db) {
     });
   });
 
-  router.patch('/v1/consent', (req, res) => {
+  router.patch('/v1/consent', requireRole('parent'), (req, res) => {
     const parsed = consentSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const parentId = parsed.data.parentId || getParentId(req);

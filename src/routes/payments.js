@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { appendEvent, getParentId } from '../db.js';
+import { requireRole } from '../auth.js';
 import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
 
@@ -98,7 +99,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     }
   }));
 
-  router.post('/v1/jpyc/transfer', asyncHandler(async (req, res) => {
+  router.post('/v1/jpyc/transfer', requireRole('adult_child'), asyncHandler(async (req, res) => {
     const parsed = transferSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const { attestationId, toAddr, incidentId, parentId } = parsed.data;
@@ -141,7 +142,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     }
   }));
 
-  router.post('/v1/jpyc/batchTransfer', asyncHandler(async (req, res) => {
+  router.post('/v1/jpyc/batchTransfer', requireRole('adult_child'), asyncHandler(async (req, res) => {
     const { settlementId, parentId } = req.body || {};
     if (!settlementId) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'settlementId required' });
     const settlement = db.prepare('SELECT * FROM settlements WHERE id = ?').get(settlementId);
@@ -207,7 +208,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     res.json({ id: row.id, parentId: row.parentId, period: row.period, lines, netCredit, pt03Credit: row.pt03Credit });
   });
 
-  router.patch('/v1/settlement/:id/line/:lineId', (req, res) => {
+  router.patch('/v1/settlement/:id/line/:lineId', requireRole('adult_child'), (req, res) => {
     const { disputed } = req.body || {};
     if (typeof disputed !== 'boolean') {
       return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'disputed must be boolean' });

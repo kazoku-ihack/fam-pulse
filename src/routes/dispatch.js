@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { z } from 'zod';
 import { appendEvent, getSettings } from '../db.js';
+import { requireRole } from '../auth.js';
 import {
   startDispatchSimulation,
   cancelDispatchSimulation,
@@ -99,7 +100,7 @@ export function createDispatchForIncident(db, incident, { idempotencyKey = null 
 export function dispatchRouter(db) {
   const router = Router();
 
-  router.post('/v1/uber/dispatch', (req, res) => {
+  router.post('/v1/uber/dispatch', requireRole('adult_child'), (req, res) => {
     const parsed = dispatchSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
     const { incidentId } = parsed.data;

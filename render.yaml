@@ -35,6 +35,14 @@ services:
         value: https://api.avax-test.network/ext/bc/C/rpc
       - key: SEED_ON_BOOT
         value: "1" # free-tier disk is ephemeral — reseed every deploy/restart
+      - key: ACTIVATION_MODE
+        value: stub # falls back to stub automatically if PROTOSURE_BASE_URL is unset — flip to protosure once tenant creds are confirmed
+      - key: ACTIVATION_MAX_ATTEMPTS
+        value: "5"
+      - key: ACTIVATION_LOCK_MINUTES
+        value: "15"
+      - key: ACTIVATION_TTL_MINUTES
+        value: "15"
       # --- secrets: fill in via the Render dashboard, never committed to git ---
       - key: API_KEY
         sync: false
@@ -59,4 +67,10 @@ services:
       - key: PROTOSURE_PASSWORD
         sync: false
       - key: JUDGE_KEY
+        sync: false
+      - key: PROTOSURE_BASE_URL
+        sync: false
+      - key: PROTOSURE_API_TOKEN
+        sync: false
+      - key: DEVICE_TOKEN_SECRET
         sync: false
