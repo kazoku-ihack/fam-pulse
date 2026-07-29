@@ -5,7 +5,10 @@
 import crypto from 'node:crypto';
 
 const DRIVER = { name: 'Kenji T.', rating: 4.9, vehicle: 'Toyota Prius', plate: 'Shinagawa 500 A 12-34' };
-const DRIVER_WALLET = '0x' + crypto.randomBytes(20).toString('hex');
+// Fixed so the demo driver has a stable, fundable Fuji address across restarts — the direct
+// Sakura -> driver ride-fee payment (routes/dispatch.js#payDriverForDispatch) targets this exact
+// address every run.
+const DRIVER_WALLET = '0x4C3a1cA5F6D0c616150D71B6639203961cb615d3';
 
 const timers = new Map(); // dispatchId -> timeout handles
 

@@ -43,8 +43,8 @@ export function getProvider() {
 
 // The wallet that submits (pays gas for) submitTrigger transactions. submitTrigger has no
 // msg.sender restriction — anyone can relay a validly-signed payload — so this is unrelated to
-// the attestation signer. STUB_SIGNER_PRIVATE_KEY is the only private key left in this service's
-// env (see .env.example); it doubles as the relayer wallet in both stub and protosure mode.
+// the attestation signer. STUB_SIGNER_PRIVATE_KEY doubles as the relayer wallet in both stub and
+// protosure mode.
 export function getRelayerWallet() {
   const key = process.env.STUB_SIGNER_PRIVATE_KEY;
   if (!key) throw new ChainNotConfiguredError('STUB_SIGNER_PRIVATE_KEY not set');
@@ -55,12 +55,45 @@ export function getRelayerWallet() {
   }
 }
 
+let warnedSakuraMismatch = false;
+
+// Sakura's own wallet key — a second, deliberate private key alongside STUB_SIGNER_PRIVATE_KEY.
+// Unlike every other payout in this service (funded from MimamorParametric's own pool via a
+// signed attestation), the taxi ride-fee payment (routes/dispatch.js#payDriverForDispatch) is a
+// literal transfer out of Sakura's own JPYC balance, which only her own key can authorize — the
+// relayer wallet has no authority over her funds.
+export function getSakuraWallet() {
+  const key = process.env.SAKURA_WALLET_PRIVATE_KEY;
+  if (!key) throw new ChainNotConfiguredError('SAKURA_WALLET_PRIVATE_KEY not set');
+  const wallet = (() => {
+    try {
+      return new ethers.Wallet(key, getProvider());
+    } catch {
+      return new ethers.Wallet(key);
+    }
+  })();
+  if (!warnedSakuraMismatch && process.env.SAKURA_WALLET_ADDR
+    && wallet.address.toLowerCase() !== process.env.SAKURA_WALLET_ADDR.toLowerCase()) {
+    console.warn(
+      `SAKURA_WALLET_PRIVATE_KEY recovers to ${wallet.address}, which does not match SAKURA_WALLET_ADDR ` +
+      `(${process.env.SAKURA_WALLET_ADDR}) — driver payments will be sent from the key's address, not the ` +
+      `configured display address.`
+    );
+    warnedSakuraMismatch = true;
+  }
+  return wallet;
+}
+
 export function isChainDeployed() {
   return Boolean(process.env.FUJI_RPC && process.env.JPYC_ADDR && process.env.PAYOUT_ADDR);
 }
 
 export function isRelayerConfigured() {
   return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY);
+}
+
+export function isSakuraWalletConfigured() {
+  return Boolean(process.env.SAKURA_WALLET_PRIVATE_KEY);
 }
 
 export function getJpycContract(runner) {
@@ -80,8 +113,10 @@ export function explorerUrl(txHash) {
 export const chain = {
   getProvider,
   getRelayerWallet,
+  getSakuraWallet,
   isChainDeployed,
   isRelayerConfigured,
+  isSakuraWalletConfigured,
   getJpycContract,
   getPayoutContract,
   explorerUrl,

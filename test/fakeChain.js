@@ -7,10 +7,15 @@ export function makeFakeChain(overrides = {}) {
   return {
     isRelayerConfigured: () => true,
     isChainDeployed: () => true,
+    isSakuraWalletConfigured: () => true,
     getRelayerWallet: () => ({ address: '0xFakeRelayerAddress00000000000000000001' }),
+    getSakuraWallet: () => ({ address: '0xFakeSakuraWallet000000000000000000001' }),
     getJpycContract: () => ({
       balanceOf: async () => 1_000_000n,
       decimals: async () => 0,
+      transfer: async () => ({
+        wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }),
+      }),
     }),
     getPayoutContract: () => ({
       submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, signature) => {

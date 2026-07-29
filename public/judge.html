@@ -198,6 +198,10 @@
     <h2>What's happening — <span id="family-label">yoshiko-001</span></h2>
     <p class="card-hint">Live, refreshes every 2s. This is the same data the Adult Child app would show, including why Claude triaged an alert the way it did.</p>
     <div id="incidents-list"><div class="empty">No active incidents right now.</div></div>
+    <div class="status-line" id="row-pay-driver" style="display:none;">
+      <span id="pay-driver-label">Ride completed</span>
+      <button id="btn-pay-driver" style="padding:6px 14px; font-size:0.85rem;">Approve &amp; pay driver</button>
+    </div>
     <div class="status-line"><span>Latest payout</span><span id="stat-payout">—</span></div>
   </div>
 
@@ -233,10 +237,15 @@
     incidentsList: document.getElementById('incidents-list'),
     eventsList: document.getElementById('events-list'),
     payout: document.getElementById('stat-payout'),
+    rowPayDriver: document.getElementById('row-pay-driver'),
+    payDriverLabel: document.getElementById('pay-driver-label'),
+    btnPayDriver: document.getElementById('btn-pay-driver'),
     linkParent: document.getElementById('link-parent'),
     linkChild: document.getElementById('link-child'),
     log: document.getElementById('log'),
   };
+
+  let pendingDispatchId = null;
 
   els.family.value = qs.get('family') || localStorage.getItem('kp_family') || 'yoshiko-001';
   els.apiBase.value = qs.get('apiBase') || localStorage.getItem('kp_apiBase') || '';
@@ -344,6 +353,15 @@
         els.payout.textContent = 'none yet';
       }
 
+      if (data.pendingDriverPayment && !els.btnPayDriver.disabled) {
+        pendingDispatchId = data.pendingDriverPayment.dispatchId;
+        els.payDriverLabel.textContent = `Ride completed — ${escapeHtml(data.pendingDriverPayment.driverName)}, ¥${data.pendingDriverPayment.amount}`;
+        els.rowPayDriver.style.display = '';
+      } else if (!data.pendingDriverPayment) {
+        pendingDispatchId = null;
+        els.rowPayDriver.style.display = 'none';
+      }
+
       if (!data.recentEvents || data.recentEvents.length === 0) {
         els.eventsList.innerHTML = '<div class="empty">No activity yet — try a scenario above.</div>';
       } else {
@@ -374,6 +392,13 @@
   document.getElementById('btn-care-reply').addEventListener('click', () =>
     callDemo('/v1/demo/scenario/care-reply', scenarioBody())
   );
+  els.btnPayDriver.addEventListener('click', async () => {
+    if (!pendingDispatchId) return;
+    els.btnPayDriver.disabled = true;
+    await callDemo('/v1/demo/scenario/pay-driver', scenarioBody({ dispatchId: pendingDispatchId }));
+    els.btnPayDriver.disabled = false;
+  });
+
   document.getElementById('btn-reset').addEventListener('click', () => {
     if (confirm('Reset all demo data for every judge? This cannot be undone.')) {
       callDemo('/v1/demo/reset', {});

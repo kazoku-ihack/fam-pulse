@@ -3,8 +3,10 @@ import { resetDb, DEFAULT_PARENT_ID } from '../db.js';
 import { startWanderingWalk } from '../sims/gps.js';
 import { checkFrsAlarms } from '../alarms.js';
 import { parseCareReplyEmail, applyParsedReply, createCareRequest } from './care.js';
+import { payDriverForDispatch, TAXI_RIDE_FEE_JPY } from './dispatch.js';
 import { asyncHandler } from '../asyncHandler.js';
 import { armAnthropicKey, takeAnthropicKey } from '../claude/pendingKey.js';
+import * as chainDefault from '../chain/chain.js';
 
 const CANNED_REPLY =
   'Hi, this is Aiko from the care network. I can visit Thursday at 3pm for a wellness check and light ' +
@@ -21,7 +23,7 @@ function fallbackCannedPlan() {
   };
 }
 
-export function demoRouter(db, { callJson } = {}) {
+export function demoRouter(db, { callJson, chain = chainDefault } = {}) {
   const router = Router();
 
   router.post('/v1/demo/reset', (req, res) => {
@@ -53,6 +55,17 @@ export function demoRouter(db, { callJson } = {}) {
       .prepare(`SELECT type, ts, title FROM events WHERE parentId = ? OR parentId IS NULL ORDER BY ts DESC, id DESC LIMIT 8`)
       .all(parentId);
 
+    // Most recent completed-but-unpaid dispatch for this family — drives the Judge Console's
+    // "Approve & Pay driver" button, which only appears once there's something to pay.
+    const unpaidDispatch = db
+      .prepare(
+        `SELECT d.id, d.driver_json FROM dispatches d
+         JOIN incidents i ON i.id = d.incidentId
+         WHERE i.parentId = ? AND d.status = 'completed' AND d.driverPaidTxHash IS NULL
+         ORDER BY d.createdTs DESC LIMIT 1`
+      )
+      .get(parentId);
+
     res.json({
       parentId,
       demoTimescale: parseFloat(process.env.DEMO_TIMESCALE) || 1,
@@ -62,6 +75,9 @@ export function demoRouter(db, { callJson } = {}) {
         ? { title: latestPayout.title, deepLink: latestPayout.deepLink, ts: latestPayout.ts }
         : null,
       recentEvents,
+      pendingDriverPayment: unpaidDispatch
+        ? { dispatchId: unpaidDispatch.id, driverName: JSON.parse(unpaidDispatch.driver_json).name, amount: TAXI_RIDE_FEE_JPY }
+        : null,
     });
   });
 
@@ -110,6 +126,27 @@ export function demoRouter(db, { callJson } = {}) {
           result.ok ? { ...result, parsedByClaude: true } : { ok: true, plan: fallbackCannedPlan(), parsedByClaude: false }
         );
         return res.json({ ok: true, scenario: 'care-reply', careRequestId: row.id });
+      }
+
+      case 'pay-driver': {
+        const { dispatchId } = req.body || {};
+        // The Judge Console can't hold x-api-key, so it can't call POST
+        // /v1/uber/dispatch/:id/pay directly — same reasoning as care-reply above. When no
+        // dispatchId is given, pay the family's most recent completed-but-unpaid dispatch (what
+        // /v1/demo/status already surfaced as pendingDriverPayment).
+        const targetId =
+          dispatchId ||
+          db
+            .prepare(
+              `SELECT d.id FROM dispatches d
+               JOIN incidents i ON i.id = d.incidentId
+               WHERE i.parentId = ? AND d.status = 'completed' AND d.driverPaidTxHash IS NULL
+               ORDER BY d.createdTs DESC LIMIT 1`
+            )
+            .get(parentId)?.id;
+        if (!targetId) return res.status(404).json({ error: 'NO_UNPAID_DISPATCH' });
+        const { status, body } = await payDriverForDispatch(db, chain, { dispatchId: targetId });
+        return res.status(status).json({ ok: status < 300, scenario: 'pay-driver', ...body });
       }
 
       default:

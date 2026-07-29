@@ -10,10 +10,25 @@ import {
   routePolyline,
   signPayload,
 } from '../sims/uber.js';
+import * as chainDefault from '../chain/chain.js';
+import { createAttestation, monthKeyTokyo } from './attestation.js';
+import { executePayoutOnChain, mapChainError, PERMANENT_FAILURE_REASONS, releaseCapLedger, withTimeout } from './payments.js';
+import { asyncHandler } from '../asyncHandler.js';
 
 export const STATE_ORDER = ['requested', 'accepted', 'en_route', 'arrived', 'completed'];
 const TERMINAL_STATES = ['completed', 'cancelled'];
 const MAX_RETRIES = 3;
+
+// Fixed ride fee, paid directly out of Sakura's own JPYC balance — not an insurance payout, so it
+// doesn't ride the attestation/cap-ledger machinery below. PT-07/PT-08 (funded from the insurer's
+// pool) are separate, best-effort legs triggered as a side effect of this payment.
+export const TAXI_RIDE_FEE_JPY = 2000;
+// How many rescue payments (dispatch-completion driver payments) in a single Tokyo month-key
+// trigger the PT-08 monthly bonus. Lives here, not attestation-rules.js, because the count is
+// read from `dispatches` (dispatch-domain data), not from `attestations` — attestation-rules.js's
+// validateRules() only ever reasons about attestation rows and cap_ledger.
+const RESCUE_BONUS_THRESHOLD = 3;
+const DEFAULT_POLICY_ID = 'KP-2026-001'; // fallback when a household has no policyNumber on file
 
 function webhookSecret() {
   return process.env.API_KEY || 'kazoku-demo-webhook-secret';
@@ -97,7 +112,149 @@ export function createDispatchForIncident(db, incident, { idempotencyKey = null 
   return { status: 201, body: parseDispatch(db.prepare('SELECT * FROM dispatches WHERE id = ?').get(id)) };
 }
 
-export function dispatchRouter(db) {
+function resolvePolicyId(db, parentId) {
+  const row = parentId ? db.prepare('SELECT policyNumber FROM households WHERE householdId = ?').get(parentId) : null;
+  return row?.policyNumber || DEFAULT_POLICY_ID;
+}
+
+// Signs and immediately submits an insurer-funded PT-07/PT-08 attestation — the same two-step
+// create-then-execute shape as POST /v1/attestation/trigger + POST /v1/jpyc/transfer, just called
+// as direct functions instead of two HTTP round-trips so "Approve & Pay" is a single click.
+// Best-effort: a failure here is reported back, never thrown — the driver has already been paid
+// (an irreversible on-chain transfer) by the time this runs, so it must not fail the request.
+async function fireInsurerPayout(db, chain, { policyId, triggerCode, recipient, triggerRef, eventTimestamp, parentId }) {
+  const created = await createAttestation(db, chain, { policyId, triggerCode, recipient, triggerRef, eventTimestamp });
+  if (!created.ok) return { ok: false, error: created.body.error };
+
+  const att = db.prepare('SELECT * FROM attestations WHERE id = ?').get(created.id);
+  try {
+    const { txHash, explorerUrl } = await withTimeout(executePayoutOnChain(chain, att), 10000);
+    db.prepare(`UPDATE attestations SET status = 'paid', txHash = ? WHERE id = ?`).run(txHash, att.id);
+    appendEvent(db, {
+      parentId,
+      type: 'payout',
+      title: `${triggerCode === 'PT-08' ? 'Monthly rescue bonus' : 'Rescue reward'} paid: ¥${att.payoutAmount}`,
+      deepLink: explorerUrl,
+      refId: att.id,
+    });
+    return { ok: true, attestationId: att.id, txHash, explorerUrl };
+  } catch (e) {
+    if (e.code === 'TIMEOUT') return { ok: false, error: 'TIMEOUT', attestationId: att.id };
+    const mapped = mapChainError(e);
+    if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
+    return { ok: false, error: mapped.error, attestationId: att.id };
+  }
+}
+
+async function executeDriverTransfer(chain, sakuraWallet, driverWalletAddr) {
+  const jpyc = chain.getJpycContract(sakuraWallet);
+  const tx = await jpyc.transfer(driverWalletAddr, BigInt(TAXI_RIDE_FEE_JPY));
+  const receipt = await tx.wait();
+  return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
+}
+
+// Core "Approve & Pay" logic, shared by the authenticated route and the Judge Console's
+// judge-key-gated demo proxy (routes/demo.js) — the console is a static page that can never hold
+// x-api-key, so it can't call the real route directly. `parentId` is always derived from the
+// dispatch's own incident, never taken from the caller, so it can't be spoofed into crediting a
+// PT-07/PT-08 reward against the wrong policy.
+export async function payDriverForDispatch(db, chain, { dispatchId }) {
+  const dispatch = db.prepare('SELECT * FROM dispatches WHERE id = ?').get(dispatchId);
+  if (!dispatch) return { status: 404, body: { error: 'NOT_FOUND' } };
+  if (dispatch.status !== 'completed') {
+    return { status: 409, body: { error: 'DISPATCH_NOT_COMPLETED' } };
+  }
+
+  if (dispatch.driverPaidTxHash) {
+    return {
+      status: 200,
+      body: {
+        alreadyPaid: true,
+        driverPayment: {
+          txHash: dispatch.driverPaidTxHash,
+          explorerUrl: chain.explorerUrl(dispatch.driverPaidTxHash),
+          amount: TAXI_RIDE_FEE_JPY,
+        },
+      },
+    };
+  }
+
+  if (!chain.isChainDeployed() || !chain.isSakuraWalletConfigured()) {
+    return { status: 503, body: { error: 'SAKURA_WALLET_NOT_CONFIGURED' } };
+  }
+
+  const incident = db.prepare('SELECT * FROM incidents WHERE id = ?').get(dispatch.incidentId);
+  const parentId = incident?.parentId || null;
+  const driver = JSON.parse(dispatch.driver_json);
+
+  let txHash, explorerUrl;
+  try {
+    const sakuraWallet = chain.getSakuraWallet();
+    ({ txHash, explorerUrl } = await withTimeout(
+      executeDriverTransfer(chain, sakuraWallet, driver.driverWalletAddr),
+      10000
+    ));
+  } catch (e) {
+    if (e.code === 'TIMEOUT') return { status: 200, body: { status: 'pending', dispatchId } };
+    return { status: 502, body: { error: 'CHAIN_ERROR', message: e.message } };
+  }
+
+  const paidTs = Date.now();
+  db.prepare('UPDATE dispatches SET driverPaidTxHash = ?, driverPaidTs = ? WHERE id = ?').run(txHash, paidTs, dispatchId);
+  appendEvent(db, {
+    parentId,
+    type: 'payout',
+    title: `Driver paid ¥${TAXI_RIDE_FEE_JPY} — ${driver.name}`,
+    deepLink: explorerUrl,
+    refId: dispatchId,
+  });
+
+  const result = {
+    driverPayment: { txHash, explorerUrl, amount: TAXI_RIDE_FEE_JPY },
+    reward: null,
+    bonus: null,
+  };
+
+  const sakuraAddr = db.prepare("SELECT address FROM wallets WHERE name = 'sakura'").get()?.address;
+  if (!sakuraAddr) {
+    result.reward = { ok: false, error: 'SAKURA_ADDR_NOT_CONFIGURED' };
+    return { status: 201, body: result };
+  }
+
+  const policyId = resolvePolicyId(db, parentId);
+  result.reward = await fireInsurerPayout(db, chain, {
+    policyId,
+    triggerCode: 'PT-07',
+    recipient: sakuraAddr,
+    triggerRef: `reward-${dispatchId}`,
+    eventTimestamp: paidTs,
+    parentId,
+  });
+
+  const monthKey = monthKeyTokyo(paidTs);
+  const countThisMonth = db
+    .prepare(`SELECT driverPaidTs FROM dispatches WHERE driverPaidTxHash IS NOT NULL`)
+    .all()
+    .filter((r) => monthKeyTokyo(r.driverPaidTs) === monthKey).length;
+  const existingBonus = db
+    .prepare(`SELECT id FROM attestations WHERE triggerCode = 'PT-08' AND monthKey = ?`)
+    .get(monthKey);
+
+  if (countThisMonth >= RESCUE_BONUS_THRESHOLD && !existingBonus) {
+    result.bonus = await fireInsurerPayout(db, chain, {
+      policyId,
+      triggerCode: 'PT-08',
+      recipient: sakuraAddr,
+      triggerRef: `bonus-${monthKey}`,
+      eventTimestamp: paidTs,
+      parentId,
+    });
+  }
+
+  return { status: 201, body: result };
+}
+
+export function dispatchRouter(db, { chain = chainDefault } = {}) {
   const router = Router();
 
   router.post('/v1/uber/dispatch', requireRole('adult_child'), (req, res) => {
@@ -133,6 +290,11 @@ export function dispatchRouter(db) {
       retryCount: row.retryCount,
     });
   });
+
+  router.post('/v1/uber/dispatch/:id/pay', requireRole('adult_child'), asyncHandler(async (req, res) => {
+    const { status, body } = await payDriverForDispatch(db, chain, { dispatchId: req.params.id });
+    res.status(status).json(body);
+  }));
 
   router.delete('/v1/uber/dispatch/:id', (req, res) => {
     const row = db.prepare('SELECT * FROM dispatches WHERE id = ?').get(req.params.id);

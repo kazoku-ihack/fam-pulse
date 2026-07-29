@@ -12,7 +12,7 @@ import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
 
 // month_key is always derived in Asia/Tokyo, regardless of server host timezone.
-function monthKeyTokyo(ts = Date.now()) {
+export function monthKeyTokyo(ts = Date.now()) {
   const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Tokyo',
     year: 'numeric',
@@ -76,7 +76,7 @@ function rowToAttestation(row) {
   };
 }
 
-async function createAttestation(db, chain, { policyId, triggerCode, recipient, triggerRef, payoutAmount, eventTimestamp }) {
+export async function createAttestation(db, chain, { policyId, triggerCode, recipient, triggerRef, payoutAmount, eventTimestamp }) {
   const ts = eventTimestamp || Date.now();
   const monthKey = monthKeyTokyo(ts);
   const coverageCode = COVERAGE_CODE[triggerCode];

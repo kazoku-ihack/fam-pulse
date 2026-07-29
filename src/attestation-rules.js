@@ -12,6 +12,8 @@ export const FIXED_SCHEDULE = {
   'PT-03': 20000,
   'PT-04': 10000,
   'PT-05': 1000, // fraud-reward
+  'PT-07': 500, // rescue reward — insurer pays Sakura each time she pays a driver directly
+  'PT-08': 5000, // monthly rescue bonus — insurer pays Sakura on the 3rd rescue payment in a month
 };
 
 const PT01_MONTHLY_COUNT_CAP = 2;
