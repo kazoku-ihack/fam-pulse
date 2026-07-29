@@ -5,6 +5,23 @@ and decisions discovered while building, that aren't obvious from reading the co
 distinct from `CLAUDE.md` (static architecture map / dev commands): this file grows over time.
 See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code follows.
 
+## Render deployment (`render.yaml`)
+
+- **`REGISTERED_SIGNER` is tied 1:1 to whichever contract `PAYOUT_ADDR` currently points at** —
+  it's whatever address was actually given `setSigner(..., true)` on that specific
+  `MimamorParametric` deployment (`src/chain/deploy.js`), not a fixed constant. Until 2026-07-29 it
+  was hardcoded as a non-secret value in `render.yaml`; when `PAYOUT_ADDR` was redeployed to a new
+  contract with a different registered signer, `REGISTERED_SIGNER` silently kept the old value —
+  every signer check (`isRegisteredOnChain` in `GET /v1/attestation/signer/current`, the
+  `SIGNER_NOT_REGISTERED` gate in `POST /v1/jpyc/preTransferHash`) failed until this was caught
+  manually. Now `sync: false` alongside `JPYC_ADDR`/`PAYOUT_ADDR`, same rationale.
+- **Render env var changes don't reliably take effect via a plain `restart`** — observed directly:
+  updating env vars through the Render API and calling `POST /services/:id/restart` left the
+  running process still reading the old values (confirmed via a live on-chain error still
+  referencing the pre-update contract address). A full `POST /services/:id/deploys` (same commit,
+  fresh container) was required before the new env vars actually took effect. Prefer a real deploy
+  over a bare restart when verifying an env var change actually landed.
+
 ## Payout schedule & rules (`src/attestation-rules.js`, `src/coverage.js`)
 
 - Fixed schedule is per `triggerCode`, not client-suppliable: PT-01 ¥3,000 · PT-02 ¥30,000 ·
