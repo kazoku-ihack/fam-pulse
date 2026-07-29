@@ -135,6 +135,38 @@ test('pay driver: happy path pays the fixed fare and fires the PT-07 reward', as
   assert.equal(res.body.bonus, null);
 });
 
+test('pay driver: an explicit sakuraPrivateKey in the request overrides an unconfigured server key', async () => {
+  const chain = makeFakeChain({
+    isSakuraWalletConfigured: (key) => Boolean(key),
+    getSakuraWallet: (key) => ({ address: key ? '0xExplicitSakuraWallet00000000000001' : null }),
+  });
+  const { app } = setupApp({ dispatch: { chain } });
+  const dispatchId = await makeCompletedDispatch(app);
+
+  const withoutKey = await request(app).post(`/v1/uber/dispatch/${dispatchId}/pay`).set('x-api-key', API_KEY).send({});
+  assert.equal(withoutKey.status, 503);
+  assert.equal(withoutKey.body.error, 'SAKURA_WALLET_NOT_CONFIGURED');
+
+  const withKey = await request(app)
+    .post(`/v1/uber/dispatch/${dispatchId}/pay`)
+    .set('x-api-key', API_KEY)
+    .send({ sakuraPrivateKey: '0xsome-key' });
+  assert.equal(withKey.status, 201);
+});
+
+test('pay driver: empty sakuraPrivateKey fails validation', async () => {
+  const chain = makeFakeChain();
+  const { app } = setupApp({ dispatch: { chain } });
+  const dispatchId = await makeCompletedDispatch(app);
+
+  const res = await request(app)
+    .post(`/v1/uber/dispatch/${dispatchId}/pay`)
+    .set('x-api-key', API_KEY)
+    .send({ sakuraPrivateKey: '' });
+  assert.equal(res.status, 400);
+  assert.equal(res.body.error, 'VALIDATION_ERROR');
+});
+
 test('pay driver: 409 when dispatch is not completed', async () => {
   const chain = makeFakeChain();
   const { app } = setupApp({ dispatch: { chain } });

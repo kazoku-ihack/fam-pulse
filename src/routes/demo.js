@@ -129,11 +129,13 @@ export function demoRouter(db, { callJson, chain = chainDefault } = {}) {
       }
 
       case 'pay-driver': {
-        const { dispatchId } = req.body || {};
+        const { dispatchId, sakuraPrivateKey } = req.body || {};
         // The Judge Console can't hold x-api-key, so it can't call POST
         // /v1/uber/dispatch/:id/pay directly — same reasoning as care-reply above. When no
         // dispatchId is given, pay the family's most recent completed-but-unpaid dispatch (what
-        // /v1/demo/status already surfaced as pendingDriverPayment).
+        // /v1/demo/status already surfaced as pendingDriverPayment). sakuraPrivateKey is an
+        // optional per-request override typed into the console's own field — see
+        // chain.js#getSakuraWallet — never persisted here, just passed straight through.
         const targetId =
           dispatchId ||
           db
@@ -145,7 +147,7 @@ export function demoRouter(db, { callJson, chain = chainDefault } = {}) {
             )
             .get(parentId)?.id;
         if (!targetId) return res.status(404).json({ error: 'NO_UNPAID_DISPATCH' });
-        const { status, body } = await payDriverForDispatch(db, chain, { dispatchId: targetId });
+        const { status, body } = await payDriverForDispatch(db, chain, { dispatchId: targetId, sakuraPrivateKey });
         return res.status(status).json({ ok: status < 300, scenario: 'pay-driver', ...body });
       }
 

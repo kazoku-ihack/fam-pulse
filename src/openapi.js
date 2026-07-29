@@ -714,6 +714,42 @@ export const openApiSpec = {
         responses: { 204: { description: 'Cancelled' }, 404: errRes('NOT_FOUND') },
       },
     },
+    '/v1/uber/dispatch/{id}/pay': {
+      post: {
+        tags: ['Dispatch'],
+        summary:
+          'Approve & pay: direct ¥2000 JPYC transfer from Sakura\'s wallet to the driver for a completed ' +
+          'dispatch, then best-effort PT-07 rescue-reward (¥500 to Sakura) and, on the 3rd rescue payment ' +
+          'in a Tokyo month, PT-08 monthly bonus (¥5000 to Sakura) — both funded from the insurer pool via ' +
+          'the normal attestation pipeline. Idempotent: paying an already-paid dispatch replays the stored proof.',
+        parameters: [idParam()],
+        requestBody: jsonBody({
+          type: 'object',
+          properties: {
+            sakuraPrivateKey: {
+              type: 'string',
+              description: 'Optional per-request override for SAKURA_WALLET_PRIVATE_KEY — never persisted server-side',
+            },
+          },
+        }),
+        responses: {
+          201: jsonResponse('Paid', {
+            type: 'object',
+            properties: {
+              driverPayment: { type: 'object', properties: { txHash: { type: 'string' }, explorerUrl: { type: 'string' }, amount: { type: 'integer' } } },
+              reward: { type: 'object', nullable: true },
+              bonus: { type: 'object', nullable: true },
+            },
+          }),
+          200: jsonResponse('Already paid (idempotent replay) or pending (chain call timed out)', { type: 'object' }),
+          400: errRes('VALIDATION_ERROR'),
+          404: errRes('NOT_FOUND'),
+          409: errRes('DISPATCH_NOT_COMPLETED'),
+          502: errRes('CHAIN_ERROR'),
+          503: errRes('SAKURA_WALLET_NOT_CONFIGURED'),
+        },
+      },
+    },
     '/v1/webhooks/uber': {
       post: {
         tags: ['Dispatch'],
