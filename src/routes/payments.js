@@ -22,7 +22,7 @@ export function _resetDemoTxThrottle() {
   demoTxTimestamps = [];
 }
 
-export function withTimeout(promise, ms) {
+function withTimeout(promise, ms) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(() => reject(Object.assign(new Error('TIMEOUT'), { code: 'TIMEOUT' })), ms);
@@ -39,7 +39,7 @@ export function computeNetCredit(lines) {
 
 // Values are echoed verbatim from the stored attestation — never recomputed — so what gets
 // submitted on-chain is exactly what was validated and signed at attestation time.
-export async function executePayoutOnChain(chain, att) {
+async function executePayoutOnChain(chain, att) {
   const wallet = chain.getRelayerWallet();
   const payout = chain.getPayoutContract(wallet);
   const tx = await payout.submitTrigger(
@@ -56,13 +56,13 @@ export async function executePayoutOnChain(chain, att) {
 }
 
 // Permanent (non-retryable) on-chain failures free the reserved headroom back up.
-export const PERMANENT_FAILURE_REASONS = new Set(['NONCE_ALREADY_USED', 'SIGNER_MISMATCH', 'CAP_EXCEEDED']);
+const PERMANENT_FAILURE_REASONS = new Set(['NONCE_ALREADY_USED', 'SIGNER_MISMATCH', 'CAP_EXCEEDED']);
 
-export function releaseCapLedger(db, attestationId) {
+function releaseCapLedger(db, attestationId) {
   db.prepare(`UPDATE cap_ledger SET status = 'released' WHERE attestationId = ? AND status = 'reserved'`).run(attestationId);
 }
 
-export function mapChainError(e) {
+function mapChainError(e) {
   const msg = String(e.reason || e.shortMessage || e.message || '');
   if (msg.includes('NONCE_ALREADY_USED')) return { status: 409, error: 'NONCE_ALREADY_USED' };
   if (msg.includes('SIGNER_MISMATCH')) {

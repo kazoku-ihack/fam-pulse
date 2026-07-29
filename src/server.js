@@ -86,7 +86,7 @@ export function createApp(db, deps = {}) {
   app.use(telemetryRouter(db));
   app.use(parentRouter(db));
   app.use(eventsRouter(db));
-  app.use(dispatchRouter(db, deps.dispatch));
+  app.use(dispatchRouter(db));
   app.use(careRouter(db, deps.care));
   app.use(paymentsRouter(db, deps.payments));
   app.use(attestationRouter(db, deps.attestation));

@@ -9,8 +9,6 @@ export const COVERAGE_CODE = {
   'PT-04': '0x04',
   'PT-05': '0x05',
   'PT-06': '0x06',
-  'PT-07': '0x07',
-  'PT-08': '0x08',
 };
 
 export const TRIGGER_CODES = Object.keys(COVERAGE_CODE);
@@ -25,6 +23,4 @@ export const MONTHLY_CAP = {
   'PT-04': 10000,
   'PT-05': 5000,
   'PT-06': 100000,
-  'PT-07': 5000, // rescue reward, ¥500 x up to 10 dispatch payments/month
-  'PT-08': 5000, // monthly rescue bonus — fires at most once/month by dispatch.js gating; this is a backstop
 };

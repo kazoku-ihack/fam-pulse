@@ -21,44 +21,6 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   host timezone is UTC, and Tokyo is UTC+9, so a payout near local midnight could land in the
   wrong month-key bucket if this weren't pinned explicitly.
 
-## Taxi driver payment (`src/routes/dispatch.js#payDriverForDispatch`)
-
-- This is the **one payout path in the whole service that is not funded from
-  `MimamorParametric`'s pool**. The ¥2,000 ride fee is a literal `DemoJPYC.transfer` out of
-  Sakura's own wallet, signed by a second private key (`SAKURA_WALLET_PRIVATE_KEY`,
-  `chain.js#getSakuraWallet`) — a deliberate exception to the "one private key
-  (`STUB_SIGNER_PRIVATE_KEY`) in this service's env" invariant. Sakura's wallet must hold its own
-  Fuji AVAX for gas; the relayer wallet has no authority over her funds.
-- Every driver payment then fires two **best-effort** insurer-funded legs through the normal
-  attestation pipeline (`createAttestation` + `executePayoutOnChain`, both exported for this
-  reuse): PT-07 (¥500 "rescue reward" to Sakura, every payment) and PT-08 (¥5,000 "monthly rescue
-  bonus" to Sakura, once a month). Both ride the same `FIXED_SCHEDULE`/`MONTHLY_CAP`/cap-ledger
-  machinery as PT-01..06 — nothing new there.
-- The PT-08 "fires once when the 3rd rescue payment lands in a Tokyo month" gate is **not** in
-  `attestation-rules.js` — it reads the `dispatches` table (count of non-null `driverPaidTxHash`
-  rows whose `driverPaidTs` falls in the current `monthKeyTokyo()`), which `validateRules()` has
-  no visibility into (it only ever reasons about `attestations`/`cap_ledger`). The gate itself is
-  a plain guard in `payDriverForDispatch`: count >= 3 **and** no existing `attestations` row with
-  `triggerCode='PT-08'` for that `monthKey` yet.
-- Failure ordering matters: the driver transfer is authoritative and irreversible once it lands
-  on-chain, so a PT-07/PT-08 failure afterward is reported in the response (`reward`/`bonus:
-  {ok:false, error}`) but never fails the request or blocks the driver from being paid. There is
-  no automatic retry for a failed reward/bonus leg — replay it manually via the generic
-  `/v1/attestation/trigger` + `/v1/jpyc/transfer` endpoints.
-- Idempotency lives on the `dispatches` row itself (`driverPaidTxHash`/`driverPaidTs`), not a
-  separate ledger — paying an already-paid dispatch returns the stored proof and re-runs nothing,
-  which is also what prevents a double-click from double-counting toward the PT-08 threshold.
-- **Operational gap:** `deploy.js`'s `setCap` loop iterates `COVERAGE_CODE` generically, so a
-  *fresh* deploy sets PT-07/PT-08 caps automatically. An **already-deployed** `MimamorParametric`
-  contract (the common case for this hackathon) only has caps set for PT-01..PT-06 from whenever
-  `deploy.js` last ran — PT-07/PT-08 payouts will revert `CAP_EXCEEDED` until someone calls
-  `setCap` for `0x07`/`0x08` against the live contract (owner-only, not automated by this change).
-- The Judge Console (`public/judge.html`) can't hold `x-api-key`, so its "Approve & pay driver"
-  button goes through `POST /v1/demo/scenario/pay-driver` (judge-key gated), which calls
-  `payDriverForDispatch` directly rather than proxying the real `POST
-  /v1/uber/dispatch/:id/pay` over HTTP — same pattern already used by the `care-reply` scenario
-  for `POST /v1/careRequest`.
-
 ## Signature digest (`src/protosure/stub.js`, `MimamorParametric.sol`)
 
 - The digest is a packed-encoding hash over exactly 8 fields in this order: `triggerRef`

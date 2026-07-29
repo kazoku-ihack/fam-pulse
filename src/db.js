@@ -83,9 +83,7 @@ function migrate(db) {
       lng REAL,
       retryCount INTEGER DEFAULT 0,
       idempotencyKey TEXT,
-      createdTs INTEGER,
-      driverPaidTxHash TEXT,
-      driverPaidTs INTEGER
+      createdTs INTEGER
     );
 
     CREATE TABLE IF NOT EXISTS care_requests (
@@ -211,17 +209,6 @@ function migrate(db) {
     if (!cols.some((c) => c.name === 'householdId')) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN householdId TEXT`);
     }
-  }
-
-  // driverPaidTxHash/driverPaidTs record proof of the direct Sakura -> driver ride-fee transfer
-  // (routes/dispatch.js#payDriverForDispatch) — added after dispatches already shipped, so guard
-  // the same way as householdId above.
-  const dispatchCols = db.prepare(`PRAGMA table_info(dispatches)`).all();
-  if (!dispatchCols.some((c) => c.name === 'driverPaidTxHash')) {
-    db.exec(`ALTER TABLE dispatches ADD COLUMN driverPaidTxHash TEXT`);
-  }
-  if (!dispatchCols.some((c) => c.name === 'driverPaidTs')) {
-    db.exec(`ALTER TABLE dispatches ADD COLUMN driverPaidTs INTEGER`);
   }
 }
 
