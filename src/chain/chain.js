@@ -55,18 +55,15 @@ export function getRelayerWallet() {
   }
 }
 
+let warnedSakuraMismatch = false;
+
 // Sakura's own wallet key — a second, deliberate private key alongside STUB_SIGNER_PRIVATE_KEY.
 // Unlike every other payout in this service (funded from MimamorParametric's own pool via a
 // signed attestation), the taxi ride-fee payment (routes/dispatch.js#payDriverForDispatch) is a
 // literal transfer out of Sakura's own JPYC balance, which only her own key can authorize — the
 // relayer wallet has no authority over her funds.
-//
-// `privateKey`, if given, is an explicit per-request key (e.g. typed into the Judge Console) and
-// always wins over SAKURA_WALLET_PRIVATE_KEY — same "explicit per-call value beats the standing
-// env var" convention as src/claude/client.js's per-call apiKey. Never cached, never persisted;
-// it lives only for the duration of the ethers.Wallet instance built here.
-export function getSakuraWallet(privateKey) {
-  const key = privateKey || process.env.SAKURA_WALLET_PRIVATE_KEY;
+export function getSakuraWallet() {
+  const key = process.env.SAKURA_WALLET_PRIVATE_KEY;
   if (!key) throw new ChainNotConfiguredError('SAKURA_WALLET_PRIVATE_KEY not set');
   const wallet = (() => {
     try {
@@ -75,12 +72,14 @@ export function getSakuraWallet(privateKey) {
       return new ethers.Wallet(key);
     }
   })();
-  if (process.env.SAKURA_WALLET_ADDR && wallet.address.toLowerCase() !== process.env.SAKURA_WALLET_ADDR.toLowerCase()) {
+  if (!warnedSakuraMismatch && process.env.SAKURA_WALLET_ADDR
+    && wallet.address.toLowerCase() !== process.env.SAKURA_WALLET_ADDR.toLowerCase()) {
     console.warn(
-      `Sakura signing key recovers to ${wallet.address}, which does not match SAKURA_WALLET_ADDR ` +
+      `SAKURA_WALLET_PRIVATE_KEY recovers to ${wallet.address}, which does not match SAKURA_WALLET_ADDR ` +
       `(${process.env.SAKURA_WALLET_ADDR}) — driver payments will be sent from the key's address, not the ` +
       `configured display address.`
     );
+    warnedSakuraMismatch = true;
   }
   return wallet;
 }
@@ -93,8 +92,8 @@ export function isRelayerConfigured() {
   return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY);
 }
 
-export function isSakuraWalletConfigured(privateKey) {
-  return Boolean(privateKey || process.env.SAKURA_WALLET_PRIVATE_KEY);
+export function isSakuraWalletConfigured() {
+  return Boolean(process.env.SAKURA_WALLET_PRIVATE_KEY);
 }
 
 export function getJpycContract(runner) {

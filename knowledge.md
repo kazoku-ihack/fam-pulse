@@ -29,14 +29,6 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   `chain.js#getSakuraWallet`) — a deliberate exception to the "one private key
   (`STUB_SIGNER_PRIVATE_KEY`) in this service's env" invariant. Sakura's wallet must hold its own
   Fuji AVAX for gas; the relayer wallet has no authority over her funds.
-- The signing key can also be supplied **per-request** (`sakuraPrivateKey` in the `POST .../pay`
-  body, or the Judge Console's own password field) and always wins over the standing
-  `SAKURA_WALLET_PRIVATE_KEY` env var — same "explicit per-call value beats the env var"
-  convention `src/claude/client.js` already uses for Anthropic keys. It's threaded straight
-  through (`payDriverForDispatch` → `chain.getSakuraWallet(sakuraPrivateKey)`), never armed/cached
-  anywhere, since (unlike the Claude-key-arming dance in `pendingKey.js`) this whole payment is
-  synchronous within one request — there's no later background step that needs the key handed to
-  it separately.
 - Every driver payment then fires two **best-effort** insurer-funded legs through the normal
   attestation pipeline (`createAttestation` + `executePayoutOnChain`, both exported for this
   reuse): PT-07 (¥500 "rescue reward" to Sakura, every payment) and PT-08 (¥5,000 "monthly rescue

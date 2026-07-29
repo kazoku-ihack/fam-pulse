@@ -198,12 +198,6 @@
     <h2>What's happening — <span id="family-label">yoshiko-001</span></h2>
     <p class="card-hint">Live, refreshes every 2s. This is the same data the Adult Child app would show, including why Claude triaged an alert the way it did.</p>
     <div id="incidents-list"><div class="empty">No active incidents right now.</div></div>
-    <div class="row" id="row-sakura-key" style="display:none; margin: 10px 0 6px;">
-      <div style="flex:1;">
-        <label for="sakuraKey">Sakura wallet private key (optional)</label>
-        <input id="sakuraKey" type="password" autocomplete="off" placeholder="leave blank to use the server's configured key — never saved in this browser" />
-      </div>
-    </div>
     <div class="status-line" id="row-pay-driver" style="display:none;">
       <span id="pay-driver-label">Ride completed</span>
       <button id="btn-pay-driver" style="padding:6px 14px; font-size:0.85rem;">Approve &amp; pay driver</button>
@@ -244,10 +238,8 @@
     eventsList: document.getElementById('events-list'),
     payout: document.getElementById('stat-payout'),
     rowPayDriver: document.getElementById('row-pay-driver'),
-    rowSakuraKey: document.getElementById('row-sakura-key'),
     payDriverLabel: document.getElementById('pay-driver-label'),
     btnPayDriver: document.getElementById('btn-pay-driver'),
-    sakuraKey: document.getElementById('sakuraKey'),
     linkParent: document.getElementById('link-parent'),
     linkChild: document.getElementById('link-child'),
     log: document.getElementById('log'),
@@ -365,11 +357,9 @@
         pendingDispatchId = data.pendingDriverPayment.dispatchId;
         els.payDriverLabel.textContent = `Ride completed — ${escapeHtml(data.pendingDriverPayment.driverName)}, ¥${data.pendingDriverPayment.amount}`;
         els.rowPayDriver.style.display = '';
-        els.rowSakuraKey.style.display = '';
       } else if (!data.pendingDriverPayment) {
         pendingDispatchId = null;
         els.rowPayDriver.style.display = 'none';
-        els.rowSakuraKey.style.display = 'none';
       }
 
       if (!data.recentEvents || data.recentEvents.length === 0) {
@@ -405,10 +395,7 @@
   els.btnPayDriver.addEventListener('click', async () => {
     if (!pendingDispatchId) return;
     els.btnPayDriver.disabled = true;
-    const extra = { dispatchId: pendingDispatchId };
-    if (els.sakuraKey.value) extra.sakuraPrivateKey = els.sakuraKey.value;
-    await callDemo('/v1/demo/scenario/pay-driver', scenarioBody(extra));
-    els.sakuraKey.value = ''; // never held onto beyond this one call
+    await callDemo('/v1/demo/scenario/pay-driver', scenarioBody({ dispatchId: pendingDispatchId }));
     els.btnPayDriver.disabled = false;
   });
 

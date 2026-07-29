@@ -55,12 +55,6 @@ const dispatchSchema = z.object({
   incidentId: z.string().min(1),
 });
 
-const payDriverSchema = z.object({
-  // Explicit per-request override for SAKURA_WALLET_PRIVATE_KEY — see
-  // chain.js#getSakuraWallet for why this is never persisted or logged.
-  sakuraPrivateKey: z.string().min(1).optional(),
-});
-
 // Core dispatch-creation logic, shared by the HTTP route and by automatic triggers (e.g. an
 // unusual wandering triage result — see createDispatchForIncident's caller in routes/incidents.js).
 // `incident` only needs { id, parentId, lat, lng }. Returns { status, body } — never throws for
@@ -163,10 +157,8 @@ async function executeDriverTransfer(chain, sakuraWallet, driverWalletAddr) {
 // judge-key-gated demo proxy (routes/demo.js) — the console is a static page that can never hold
 // x-api-key, so it can't call the real route directly. `parentId` is always derived from the
 // dispatch's own incident, never taken from the caller, so it can't be spoofed into crediting a
-// PT-07/PT-08 reward against the wrong policy. `sakuraPrivateKey`, if given, is an explicit
-// per-request key that overrides SAKURA_WALLET_PRIVATE_KEY (see chain.js#getSakuraWallet) — never
-// persisted, only ever used to build one ephemeral ethers.Wallet for this single payment.
-export async function payDriverForDispatch(db, chain, { dispatchId, sakuraPrivateKey }) {
+// PT-07/PT-08 reward against the wrong policy.
+export async function payDriverForDispatch(db, chain, { dispatchId }) {
   const dispatch = db.prepare('SELECT * FROM dispatches WHERE id = ?').get(dispatchId);
   if (!dispatch) return { status: 404, body: { error: 'NOT_FOUND' } };
   if (dispatch.status !== 'completed') {
@@ -187,7 +179,7 @@ export async function payDriverForDispatch(db, chain, { dispatchId, sakuraPrivat
     };
   }
 
-  if (!chain.isChainDeployed() || !chain.isSakuraWalletConfigured(sakuraPrivateKey)) {
+  if (!chain.isChainDeployed() || !chain.isSakuraWalletConfigured()) {
     return { status: 503, body: { error: 'SAKURA_WALLET_NOT_CONFIGURED' } };
   }
 
@@ -197,7 +189,7 @@ export async function payDriverForDispatch(db, chain, { dispatchId, sakuraPrivat
 
   let txHash, explorerUrl;
   try {
-    const sakuraWallet = chain.getSakuraWallet(sakuraPrivateKey);
+    const sakuraWallet = chain.getSakuraWallet();
     ({ txHash, explorerUrl } = await withTimeout(
       executeDriverTransfer(chain, sakuraWallet, driver.driverWalletAddr),
       10000
@@ -300,12 +292,7 @@ export function dispatchRouter(db, { chain = chainDefault } = {}) {
   });
 
   router.post('/v1/uber/dispatch/:id/pay', requireRole('adult_child'), asyncHandler(async (req, res) => {
-    const parsed = payDriverSchema.safeParse(req.body || {});
-    if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
-    const { status, body } = await payDriverForDispatch(db, chain, {
-      dispatchId: req.params.id,
-      sakuraPrivateKey: parsed.data.sakuraPrivateKey,
-    });
+    const { status, body } = await payDriverForDispatch(db, chain, { dispatchId: req.params.id });
     res.status(status).json(body);
   }));
 
