@@ -4,6 +4,21 @@
 
 import { MONTHLY_CAP } from './coverage.js';
 
+// month_key is always derived in Asia/Tokyo, regardless of server host timezone. Lives here
+// (rather than in routes/attestation.js, where it originated) so routes/payments.js can also
+// import it without creating a circular dependency — attestation.js already imports from
+// payments.js (computeNetCredit), and attestation-rules.js imports from neither.
+export function monthKeyTokyo(ts = Date.now()) {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Tokyo',
+    year: 'numeric',
+    month: '2-digit',
+  }).formatToParts(new Date(ts));
+  const year = parts.find((p) => p.type === 'year').value;
+  const month = parts.find((p) => p.type === 'month').value;
+  return `${year}${month}`;
+}
+
 // PT-06 (settlement) has no fixed schedule amount — its payout is the settlement's actual
 // netted credit, supplied by the caller rather than looked up here.
 export const FIXED_SCHEDULE = {

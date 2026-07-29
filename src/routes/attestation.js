@@ -3,25 +3,13 @@ import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { appendEvent } from '../db.js';
 import { requireRole } from '../auth.js';
-import { validateRules, FIXED_SCHEDULE } from '../attestation-rules.js';
+import { validateRules, FIXED_SCHEDULE, monthKeyTokyo } from '../attestation-rules.js';
 import { COVERAGE_CODE, TRIGGER_CODES } from '../coverage.js';
 import { signTrigger as stubSign, StubSignerNotConfiguredError } from '../protosure/stub.js';
 import { sign as raterSign, RaterUnavailableError } from '../protosure/rater-client.js';
 import { computeNetCredit } from './payments.js';
 import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
-
-// month_key is always derived in Asia/Tokyo, regardless of server host timezone.
-function monthKeyTokyo(ts = Date.now()) {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'Asia/Tokyo',
-    year: 'numeric',
-    month: '2-digit',
-  }).formatToParts(new Date(ts));
-  const year = parts.find((p) => p.type === 'year').value;
-  const month = parts.find((p) => p.type === 'month').value;
-  return `${year}${month}`;
-}
 
 const triggerSchema = z.object({
   policyId: z.string().min(1),

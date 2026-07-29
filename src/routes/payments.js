@@ -1,7 +1,12 @@
 import { Router } from 'express';
+import { randomUUID } from 'node:crypto';
+import { ethers } from 'ethers';
 import { z } from 'zod';
 import { appendEvent, getParentId } from '../db.js';
 import { requireRole } from '../auth.js';
+import { validateRules, monthKeyTokyo } from '../attestation-rules.js';
+import { COVERAGE_CODE } from '../coverage.js';
+import { computeInner } from '../protosure/stub.js';
 import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
 
@@ -80,6 +85,30 @@ const transferSchema = z.object({
   parentId: z.string().optional(),
 });
 
+// Mendix now calls Protosure directly for the attestation itself — this service no longer signs
+// via protosure/rater-client.js for this flow. preTransferHash is the step in between: it
+// receives Protosure's already-signed attestation, independently verifies it, applies this
+// repo's own payout rules (deterministic rules still own the money, even though Protosure already
+// attested — see attestation-rules.js), and persists an `attestations` row exactly like
+// POST /v1/attestation/trigger does, so POST /v1/jpyc/transfer can execute it unchanged.
+const preTransferHashSchema = z.object({
+  quote_id: z.string().min(1),
+  coverage_code: z.string().min(1),
+  recipient: z.string().min(1),
+  payout_amount: z.number().positive(),
+  trigger_ref: z.string().min(1),
+  incident_timestamp: z.number(),
+  contract_address: z.string().min(1),
+  chain_id: z.union([z.string(), z.number()]),
+  parentId: z.string().optional(),
+  attester: z.object({
+    nonce: z.string().min(1),
+    signer: z.string().min(1),
+    signature: z.string().min(1),
+    payload_hash: z.string().min(1),
+  }),
+});
+
 export function paymentsRouter(db, { chain = chainDefault } = {}) {
   const router = Router();
 
@@ -97,6 +126,128 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     } catch (e) {
       res.status(502).json({ error: 'CHAIN_ERROR', message: e.message });
     }
+  }));
+
+  router.post('/v1/jpyc/preTransferHash', requireRole('adult_child'), asyncHandler(async (req, res) => {
+    const parsed = preTransferHashSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
+    const {
+      quote_id, coverage_code, recipient, payout_amount, trigger_ref,
+      incident_timestamp, contract_address, chain_id, attester, parentId,
+    } = parsed.data;
+
+    // coverage_code arrives as the on-chain hex byte (e.g. "0x01") — reverse-map to this repo's
+    // triggerCode so the fixed-schedule/cool-down rules (keyed by triggerCode) can run.
+    const triggerCode = Object.entries(COVERAGE_CODE).find(
+      ([, hex]) => hex.toLowerCase() === coverage_code.toLowerCase()
+    )?.[0];
+    if (!triggerCode) return res.status(400).json({ error: 'UNKNOWN_COVERAGE_CODE' });
+
+    // The digest binds contract_address/chain_id implicitly, but a mismatch would otherwise only
+    // surface as a wasted, later on-chain revert — fail fast instead.
+    if (contract_address.toLowerCase() !== String(process.env.PAYOUT_ADDR || '').toLowerCase()) {
+      return res.status(422).json({ error: 'CONTRACT_ADDRESS_MISMATCH' });
+    }
+    if (String(chain_id) !== String(process.env.CHAIN_ID || '43113')) {
+      return res.status(422).json({ error: 'CHAIN_ID_MISMATCH' });
+    }
+
+    const monthKey = monthKeyTokyo(incident_timestamp);
+
+    // Deterministic rules still own the money — Protosure's own attestation doesn't bypass this;
+    // same FIXED_SCHEDULE / PT-01 cool-down / cap_ledger headroom checks
+    // POST /v1/attestation/trigger already applies.
+    const rules = validateRules({ db, triggerCode, payoutAmount: payout_amount, monthKey, coverageCode: coverage_code });
+    if (!rules.ok) return res.status(422).json({ error: rules.reason });
+
+    // Independently verify the attester's signature — never trust a signature blob relayed
+    // through Mendix without recomputing it ourselves. Reuses the exact digest scheme
+    // MimamorParametric.sol / protosure/stub.js already use, so it can never drift from what the
+    // contract will actually recover on submitTrigger.
+    const inner = computeInner({
+      policyId: quote_id,
+      triggerRef: trigger_ref,
+      coverageCode: coverage_code,
+      payoutAmount: payout_amount,
+      recipient,
+      monthKey,
+      contractAddress: contract_address,
+      chainId: chain_id,
+    });
+    const digest = ethers.hashMessage(ethers.getBytes(inner));
+    if (digest.toLowerCase() !== attester.payload_hash.toLowerCase()) {
+      return res.status(422).json({ error: 'PAYLOAD_HASH_MISMATCH' });
+    }
+
+    let recovered;
+    try {
+      recovered = ethers.recoverAddress(digest, attester.signature);
+    } catch (e) {
+      return res.status(422).json({ error: 'INVALID_SIGNATURE', message: e.message });
+    }
+    if (recovered.toLowerCase() !== attester.signer.toLowerCase()) {
+      return res.status(422).json({ error: 'SIGNATURE_SIGNER_MISMATCH' });
+    }
+
+    const registeredSigner = String(process.env.REGISTERED_SIGNER || '').toLowerCase();
+    if (!registeredSigner || attester.signer.toLowerCase() !== registeredSigner) {
+      return res.status(422).json({ error: 'SIGNER_NOT_REGISTERED' });
+    }
+
+    const id = randomUUID();
+    db.prepare(
+      `INSERT INTO attestations (id, policyId, triggerCode, payoutAmount, recipient, timestamp, triggerRef, coverageCode, monthKey, payloadHash, signature, signer, source, txHash, status, attesterNonce)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`
+    ).run(
+      id,
+      quote_id,
+      triggerCode,
+      payout_amount,
+      recipient,
+      incident_timestamp,
+      trigger_ref,
+      coverage_code,
+      monthKey,
+      digest,
+      attester.signature,
+      attester.signer,
+      'protosure-direct',
+      'signed',
+      attester.nonce
+    );
+
+    // Reserve the intended spend against the local cap ledger, same as createAttestation() in
+    // routes/attestation.js — released by /v1/jpyc/transfer on a permanent on-chain submit failure.
+    db.prepare(
+      `INSERT INTO cap_ledger (id, coverageCode, monthKey, amount, attestationId, status, ts) VALUES (?,?,?,?,?, 'reserved', ?)`
+    ).run(randomUUID(), coverage_code, monthKey, payout_amount, id, Date.now());
+
+    appendEvent(db, {
+      parentId: parentId || null,
+      type: 'payout',
+      title: `Attestation received from Protosure for ${triggerCode}`,
+      deepLink: `/v1/attestation/${id}`,
+      refId: id,
+    });
+
+    res.status(201).json({
+      id,
+      status: 'signed',
+      source: 'protosure-direct',
+      triggerCode,
+      payoutAmount: payout_amount,
+      quoteId: quote_id,
+      nonce: attester.nonce,
+      // Informational only — no second signature is produced here. `oracle` names this service's
+      // own configured signer identity for audit purposes; the attester's (Protosure's) signature
+      // is the only one that actually authorizes the on-chain transfer via submitTrigger.
+      oracle: process.env.REGISTERED_SIGNER || null,
+      attester: attester.signer,
+      oracleSig: null,
+      attesterSig: attester.signature,
+      evidenceHash: digest,
+      amountWei: payout_amount,
+    });
   }));
 
   router.post('/v1/jpyc/transfer', requireRole('adult_child'), asyncHandler(async (req, res) => {

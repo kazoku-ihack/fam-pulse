@@ -17,9 +17,53 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   cap independently via `monthSpend` — the local check exists purely to avoid a wasted gas-costing
   round-trip, not as the source of truth.
 - `month_key` is always `YYYYMM` derived in **Asia/Tokyo**, regardless of the server host's
-  timezone (`monthKeyTokyo()` in `src/routes/attestation.js`) — matters because Render's default
+  timezone (`monthKeyTokyo()` in `src/attestation-rules.js` — moved here from
+  `routes/attestation.js` so `routes/payments.js` can import it too, without a circular
+  dependency; see the "Mendix→Protosure direct" section below) — matters because Render's default
   host timezone is UTC, and Tokyo is UTC+9, so a payout near local midnight could land in the
   wrong month-key bucket if this weren't pinned explicitly.
+
+## Mendix→Protosure-direct attestation flow (`POST /v1/jpyc/preTransferHash`)
+
+- **Scope change (2026-07-29): Mendix now calls Protosure directly for the attestation itself.**
+  This service no longer signs via `protosure/rater-client.js` for that flow — `POST
+  /v1/attestation/trigger` (this service asks Protosure/stub to sign) still exists for other
+  callers, but is a separate, still-valid path. `preTransferHash` is the new step in between:
+  Mendix already has a Protosure-signed attestation and hands it to us to verify + persist before
+  calling the unchanged `POST /v1/jpyc/transfer` to execute it on-chain.
+- **Deterministic rules still own the money even here** — `validateRules()` runs against the
+  incoming `coverage_code`/`payout_amount` exactly as it does for `/v1/attestation/trigger`,
+  despite Protosure having already attested it. This was a deliberate design decision (not an
+  oversight): an external attestation is not itself sufficient authorization by this repo's
+  architecture ("Claude never gates money" — and neither does an unverified external service).
+- **The attester's signature is independently re-verified, not trusted as a channel-authenticated
+  blob.** Unlike the live-rater path (`rater-client.js`, which trusts an HTTPS+Basic-auth call
+  *we* made), Mendix relays the attestation to us over a channel we don't control — so this
+  endpoint recomputes the canonical digest via `protosure/stub.js#computeInner` (the same function
+  `MimamorParametric.sol`/the offline stub use) and calls `ethers.recoverAddress(digest,
+  signature)`, rejecting on any mismatch (`PAYLOAD_HASH_MISMATCH`, `SIGNATURE_SIGNER_MISMATCH`) —
+  never a bare string comparison of the given fields.
+- **`coverage_code` arrives as the on-chain hex byte** (e.g. `"0x01"`), not the human `triggerCode`
+  (`"PT-01"`) — reverse-mapped via `COVERAGE_CODE` since every local rule is keyed by
+  `triggerCode`. An unrecognized byte is `400 UNKNOWN_COVERAGE_CODE`, not a 422 rule failure.
+- **`attester.nonce` is a separate value from `trigger_ref`, not an alias for it** — confirmed by
+  the request author, not derived independently. It's stored in a new `attestations.attesterNonce`
+  column (Protosure's own signing-scheme nonce, for audit only); `trigger_ref` remains the sole
+  on-chain dedup key (`usedNonce[triggerRef]` in `MimamorParametric.sol`), exactly as before this
+  endpoint existed.
+- **`oracle`/`oracleSig` in the response are metadata, not a second cryptographic signature** —
+  confirmed by the request author. `oracle` echoes this service's own configured signer identity
+  (`REGISTERED_SIGNER`) for audit purposes; `oracleSig` is always `null`. Only the attester's
+  (Protosure's) signature actually authorizes `submitTrigger` on-chain — `MimamorParametric.sol`
+  has no dual-signature verification and none was added for this endpoint.
+- **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
+  unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
+  `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than
+  this one endpoint, not something to infer from a single field name.
+- `contract_address`/`chain_id` are cross-checked against this deployment's `PAYOUT_ADDR`/
+  `CHAIN_ID` **before** any digest/signature work, specifically to fail fast with a clear error
+  rather than let a cross-network/cross-contract mismatch surface later as a wasted, gas-costing
+  on-chain revert.
 
 ## Signature digest (`src/protosure/stub.js`, `MimamorParametric.sol`)
 

@@ -789,6 +789,69 @@ export const openApiSpec = {
         },
       },
     },
+    '/v1/jpyc/preTransferHash': {
+      post: {
+        tags: ['Payments'],
+        summary:
+          'Receive an attestation Mendix already got directly from Protosure, independently verify it, apply this ' +
+          "repo's local payout rules (fixed schedule / PT-01 cool-down / cap headroom still apply), and persist it " +
+          'as a signed attestation ready for POST /v1/jpyc/transfer. Does not execute on-chain itself.',
+        requestBody: {
+          required: true,
+          ...jsonBody({
+            type: 'object',
+            required: ['quote_id', 'coverage_code', 'recipient', 'payout_amount', 'trigger_ref', 'incident_timestamp', 'contract_address', 'chain_id', 'attester'],
+            properties: {
+              quote_id: { type: 'string' },
+              coverage_code: { type: 'string', description: 'hex byte, e.g. "0x01" — see src/coverage.js COVERAGE_CODE' },
+              recipient: { type: 'string' },
+              payout_amount: { type: 'number' },
+              trigger_ref: { type: 'string' },
+              incident_timestamp: { type: 'integer', description: 'unix ms' },
+              contract_address: { type: 'string', description: 'must match this deployment\'s PAYOUT_ADDR' },
+              chain_id: { type: 'string' },
+              parentId: { type: 'string' },
+              attester: {
+                type: 'object',
+                required: ['nonce', 'signer', 'signature', 'payload_hash'],
+                properties: {
+                  nonce: { type: 'string', description: "Protosure's own signing nonce — stored, but not the on-chain dedup key (trigger_ref is)" },
+                  signer: { type: 'string', description: 'must equal REGISTERED_SIGNER' },
+                  signature: { type: 'string' },
+                  payload_hash: { type: 'string', description: 'must equal the server-recomputed digest (protosure/stub.js#computeInner)' },
+                },
+              },
+            },
+          }),
+        },
+        responses: {
+          201: jsonResponse('Attestation verified and persisted', {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              status: { type: 'string' },
+              source: { type: 'string', example: 'protosure-direct' },
+              triggerCode: { type: 'string' },
+              payoutAmount: { type: 'number' },
+              quoteId: { type: 'string' },
+              nonce: { type: 'string' },
+              oracle: { type: 'string', nullable: true, description: 'this service\'s own signer identity — informational only, no second signature is produced' },
+              attester: { type: 'string' },
+              oracleSig: { type: 'string', nullable: true, description: 'always null — see `oracle` above' },
+              attesterSig: { type: 'string' },
+              evidenceHash: { type: 'string' },
+              amountWei: { type: 'number', description: 'same value as payoutAmount — this repo\'s JPYC token is 0-decimal, not wei-scaled' },
+            },
+          }),
+          400: errRes('VALIDATION_ERROR or UNKNOWN_COVERAGE_CODE'),
+          422: errRes(
+            'AMOUNT_MISMATCH / COOLDOWN_EXCEEDED / CAP_EXCEEDED (local rules) — or ' +
+            'CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH / PAYLOAD_HASH_MISMATCH / INVALID_SIGNATURE / ' +
+            'SIGNATURE_SIGNER_MISMATCH / SIGNER_NOT_REGISTERED (attestation verification)'
+          ),
+        },
+      },
+    },
     '/v1/jpyc/transfer': {
       post: {
         tags: ['Payments'],

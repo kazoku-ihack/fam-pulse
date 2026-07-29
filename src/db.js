@@ -120,7 +120,8 @@ function migrate(db) {
       signer TEXT,
       source TEXT,
       txHash TEXT,
-      status TEXT
+      status TEXT,
+      attesterNonce TEXT
     );
 
     CREATE TABLE IF NOT EXISTS cap_ledger (
@@ -209,6 +210,14 @@ function migrate(db) {
     if (!cols.some((c) => c.name === 'householdId')) {
       db.exec(`ALTER TABLE ${table} ADD COLUMN householdId TEXT`);
     }
+  }
+
+  // attesterNonce holds Protosure's own signing nonce (routes/payments.js#preTransferHash) —
+  // distinct from triggerRef, which remains the on-chain dedup key. Added after `attestations`
+  // already shipped, so guard the same way as householdId above.
+  const attestationCols = db.prepare(`PRAGMA table_info(attestations)`).all();
+  if (!attestationCols.some((c) => c.name === 'attesterNonce')) {
+    db.exec(`ALTER TABLE attestations ADD COLUMN attesterNonce TEXT`);
   }
 }
 
