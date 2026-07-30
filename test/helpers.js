@@ -15,6 +15,11 @@ process.env.STUB_SIGNER_PRIVATE_KEY = '4c0883a69102937d6231471b5dbb6204fe5129617
 process.env.REGISTERED_SIGNER = process.env.REGISTERED_SIGNER || '0x2c7536e3605d9c16a7a3d7b1898e529396a65c23';
 process.env.PAYOUT_ADDR = process.env.PAYOUT_ADDR || '0x5FbDB2315678afecb367f032d93F642f64180aa3';
 process.env.CHAIN_ID = process.env.CHAIN_ID || '43113';
+// Unrelated golden key for the Rider contract's oracleSig co-signature (routes/payments.js) —
+// forced, same rationale as STUB_SIGNER_PRIVATE_KEY above: deterministic regardless of a
+// developer's local .env. Recovers to 0xA911EBe20Fb0909DCAD75821cbF7A9e57Ebaf9c9.
+process.env.ORACLE_SIGNER_PRIVATE_KEY = '8f5f86e882c0024e635799ec6d26beb5b44a0b5a8b842f6417ebf95c4cc42b21';
+process.env.RIDER_ADDR = process.env.RIDER_ADDR || '0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE';
 // Same rationale as ATTESTATION_MODE above: force stub activation regardless of a developer's
 // local ACTIVATION_MODE=protosure, so the offline suite never depends on live Protosure reachability.
 process.env.ACTIVATION_MODE = 'stub';

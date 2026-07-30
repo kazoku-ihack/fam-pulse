@@ -34,6 +34,14 @@ const PAYOUT_ABI = [
   'event PayoutExecuted(bytes32 indexed triggerRef, bytes32 indexed policyId, bytes1 coverageCode, uint256 amountJpy, address recipient, uint256 monthKey, address signer)',
 ];
 
+// The externally-deployed Rider contract used only for attestations sourced from the
+// Mendix/Protosure-direct flow (source:"protosure-direct") — its submitTrigger takes two
+// signatures (oracleSig + attesterSig) over the same digest, rather than PAYOUT_ABI's single
+// `signature`. See routes/payments.js#executeRiderPayout.
+const RIDER_ABI = [
+  'function submitTrigger(string policyIdStr, string triggerRefStr, bytes1 coverageCode, uint256 amountJpy, address recipient, uint256 monthKey, bytes oracleSig, bytes attesterSig)',
+];
+
 let cachedProvider = null;
 export function getProvider() {
   if (!process.env.FUJI_RPC) throw new ChainNotConfiguredError('FUJI_RPC not set');
@@ -59,6 +67,10 @@ export function isChainDeployed() {
   return Boolean(process.env.FUJI_RPC && process.env.JPYC_ADDR && process.env.PAYOUT_ADDR);
 }
 
+export function isRiderDeployed() {
+  return Boolean(process.env.FUJI_RPC && process.env.RIDER_ADDR);
+}
+
 export function isRelayerConfigured() {
   return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY);
 }
@@ -73,6 +85,11 @@ export function getPayoutContract(runner) {
   return new ethers.Contract(process.env.PAYOUT_ADDR, PAYOUT_ABI, runner || getProvider());
 }
 
+export function getRiderContract(runner) {
+  if (!process.env.RIDER_ADDR) throw new ChainNotConfiguredError('RIDER_ADDR not set');
+  return new ethers.Contract(process.env.RIDER_ADDR, RIDER_ABI, runner || getProvider());
+}
+
 export function explorerUrl(txHash) {
   return `https://testnet.snowtrace.io/tx/${txHash}`;
 }
@@ -81,8 +98,10 @@ export const chain = {
   getProvider,
   getRelayerWallet,
   isChainDeployed,
+  isRiderDeployed,
   isRelayerConfigured,
   getJpycContract,
   getPayoutContract,
+  getRiderContract,
   explorerUrl,
 };

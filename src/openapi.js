@@ -793,9 +793,10 @@ export const openApiSpec = {
       post: {
         tags: ['Payments'],
         summary:
-          'Receive an attestation Mendix already got directly from Protosure, independently verify it, apply this ' +
-          "repo's local payout rules (fixed schedule / PT-01 cool-down / cap headroom still apply), and persist it " +
-          'as a signed attestation ready for POST /v1/jpyc/transfer. Does not execute on-chain itself.',
+          'Receive an attestation Mendix already got directly from Protosure and persist it as a signed ' +
+          'attestation ready for POST /v1/jpyc/transfer. Trusts the caller-supplied attester signature/hash and ' +
+          'does not re-run local payout rules (fixed schedule / PT-01 cool-down / cap headroom) — Mendix/Protosure ' +
+          'are responsible for validating those upstream. Does not execute on-chain itself.',
         requestBody: {
           required: true,
           ...jsonBody({
@@ -816,9 +817,9 @@ export const openApiSpec = {
                 required: ['nonce', 'signer', 'signature', 'payload_hash'],
                 properties: {
                   nonce: { type: 'string', description: "Protosure's own signing nonce — stored, but not the on-chain dedup key (trigger_ref is)" },
-                  signer: { type: 'string', description: 'must equal REGISTERED_SIGNER' },
-                  signature: { type: 'string' },
-                  payload_hash: { type: 'string', description: 'must equal the server-recomputed digest (protosure/stub.js#computeInner)' },
+                  signer: { type: 'string', description: 'stored as-is and echoed back as `attester` — not re-verified against REGISTERED_SIGNER' },
+                  signature: { type: 'string', description: 'stored as-is, not independently re-verified' },
+                  payload_hash: { type: 'string', description: 'stored as-is and echoed back as `evidenceHash`, not recomputed/checked' },
                 },
               },
             },
@@ -844,11 +845,7 @@ export const openApiSpec = {
             },
           }),
           400: errRes('VALIDATION_ERROR or UNKNOWN_COVERAGE_CODE'),
-          422: errRes(
-            'AMOUNT_MISMATCH / COOLDOWN_EXCEEDED / CAP_EXCEEDED (local rules) — or ' +
-            'CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH / PAYLOAD_HASH_MISMATCH / INVALID_SIGNATURE / ' +
-            'SIGNATURE_SIGNER_MISMATCH / SIGNER_NOT_REGISTERED (attestation verification)'
-          ),
+          422: errRes('CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH'),
           503: errRes('CHAIN_NOT_CONFIGURED (PAYOUT_ADDR unset)'),
         },
       },
@@ -856,7 +853,11 @@ export const openApiSpec = {
     '/v1/jpyc/transfer': {
       post: {
         tags: ['Payments'],
-        summary: 'Execute a payout on-chain for a signed attestation',
+        summary:
+          'Execute a payout on-chain for a signed attestation. Attestations with source:"protosure-direct" ' +
+          '(created via POST /v1/jpyc/preTransferHash) are submitted to the externally-deployed Rider contract ' +
+          '(RIDER_ADDR) with a freshly-produced oracleSig plus the stored attesterSig; every other source still ' +
+          'targets the single-signature MimamorParametric contract at PAYOUT_ADDR, unchanged.',
         requestBody: jsonBody({
           type: 'object',
           properties: { attestationId: { type: 'string' }, toAddr: { type: 'string' }, incidentId: { type: 'string' }, parentId: { type: 'string' } },
@@ -869,7 +870,7 @@ export const openApiSpec = {
               txHash: { type: 'string' },
               explorerUrl: { type: 'string' },
               signer: { type: 'string' },
-              source: { type: 'string', enum: ['stub', 'protosure', 'stub-fallback'] },
+              source: { type: 'string', enum: ['stub', 'protosure', 'stub-fallback', 'protosure-direct'] },
               payloadHash: { type: 'string' },
             },
           }),
@@ -878,7 +879,7 @@ export const openApiSpec = {
           409: errRes('NONCE_ALREADY_USED (triggerRef replay)'),
           422: errRes('CAP_EXCEEDED'),
           502: errRes('SIGNER_MISMATCH — signer not registered on contract, run setSigner'),
-          503: errRes('CHAIN_NOT_CONFIGURED (no deployed contracts / relayer)'),
+          503: errRes('CHAIN_NOT_CONFIGURED (PAYOUT_ADDR/RIDER_ADDR or relayer not deployed) / ORACLE_SIGNER_NOT_CONFIGURED (protosure-direct only)'),
         },
       },
     },

@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
+import { ethers } from 'ethers';
 import { computeInner, signInner } from '../src/protosure/stub.js';
 import { setupApp, API_KEY } from './helpers.js';
 import { makeFakeChain } from './fakeChain.js';
 import { _resetDemoTxThrottle } from '../src/routes/payments.js';
+
+// Recovers from process.env.ORACLE_SIGNER_PRIVATE_KEY, forced in test/helpers.js.
+const ORACLE_SIGNER_ADDR = '0xA911EBe20Fb0909DCAD75821cbF7A9e57Ebaf9c9';
 
 // Same golden reference vector used in test/protosure-stub.test.js — DEMO_KEY recovers to
 // GOLDEN_SIGNER, which test/helpers.js forces as REGISTERED_SIGNER, so a signature produced here
@@ -84,9 +88,20 @@ test('preTransferHash: happy path persists an attestation compatible with /v1/jp
   assert.equal(att.body.status, 'signed');
 });
 
-test('preTransferHash: the resulting attestation executes correctly through the existing /v1/jpyc/transfer', async () => {
+test('preTransferHash: the resulting attestation executes on the Rider contract (not the single-sig payout contract), with a fresh oracleSig plus the stored attesterSig', async () => {
   _resetDemoTxThrottle();
-  const chain = makeFakeChain();
+  let riderCall = null;
+  const chain = makeFakeChain({
+    getRiderContract: () => ({
+      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig) => {
+        riderCall = { policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig };
+        return { wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }) };
+      },
+    }),
+    getPayoutContract: () => {
+      throw new Error('getPayoutContract must not be called for a protosure-direct attestation');
+    },
+  });
   const { app } = setupApp({ payments: { chain } });
 
   const pre = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody());
@@ -99,47 +114,32 @@ test('preTransferHash: the resulting attestation executes correctly through the 
   assert.equal(transfer.status, 200);
   assert.equal(transfer.body.status, 'paid');
   assert.equal(transfer.body.signer.toLowerCase(), GOLDEN_SIGNER);
+
+  assert.ok(riderCall, 'Rider contract was never called');
+  assert.equal(riderCall.attesterSig, pre.body.attesterSig);
+  const recoveredOracle = ethers.recoverAddress(pre.body.evidenceHash, riderCall.oracleSig);
+  assert.equal(recoveredOracle.toLowerCase(), ORACLE_SIGNER_ADDR.toLowerCase());
 });
 
-test('preTransferHash: rejects when the signature does not recover to the claimed attester.signer', async () => {
-  const { app } = setupApp();
-  const fields = {
-    quoteId: 'KP-2026-001',
-    triggerRef: 'TRG-0001',
-    coverageCode: '0x01',
-    payoutAmount: 3000,
-    recipient: RECIPIENT,
-    monthKey: '202608',
-    contractAddress: PAYOUT_ADDR,
-    chainId: CHAIN_ID,
-  };
-  // A validly-formed signature from an unrelated key — payload_hash is deterministic from
-  // `fields` alone (independent of who signs), so it still matches the server's recomputed
-  // digest; only the falsely-claimed `signer` should fail to match what actually recovers.
-  const { payload_hash, signature } = signAs('bb'.repeat(32), fields);
-  const body = {
-    quote_id: fields.quoteId,
-    coverage_code: fields.coverageCode,
-    recipient: fields.recipient,
-    payout_amount: fields.payoutAmount,
-    trigger_ref: fields.triggerRef,
-    incident_timestamp: AUGUST_2026_TOKYO,
-    contract_address: fields.contractAddress,
-    chain_id: fields.chainId,
-    attester: { nonce: 'PSN-0001', signer: GOLDEN_SIGNER, signature, payload_hash },
-  };
-  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'SIGNATURE_SIGNER_MISMATCH');
-});
+test('preTransferHash->transfer: 503s with ORACLE_SIGNER_NOT_CONFIGURED when ORACLE_SIGNER_PRIVATE_KEY is unset', async () => {
+  _resetDemoTxThrottle();
+  const savedKey = process.env.ORACLE_SIGNER_PRIVATE_KEY;
+  delete process.env.ORACLE_SIGNER_PRIVATE_KEY;
+  try {
+    const chain = makeFakeChain();
+    const { app } = setupApp({ payments: { chain } });
+    const pre = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody());
+    assert.equal(pre.status, 201);
 
-test('preTransferHash: rejects a payload_hash that does not match the recomputed digest', async () => {
-  const { app } = setupApp();
-  const body = baseBody();
-  body.attester.payload_hash = '0x' + '11'.repeat(32);
-  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'PAYLOAD_HASH_MISMATCH');
+    const transfer = await request(app)
+      .post('/v1/jpyc/transfer')
+      .set('x-api-key', API_KEY)
+      .send({ attestationId: pre.body.id });
+    assert.equal(transfer.status, 503);
+    assert.equal(transfer.body.error, 'ORACLE_SIGNER_NOT_CONFIGURED');
+  } finally {
+    process.env.ORACLE_SIGNER_PRIVATE_KEY = savedKey;
+  }
 });
 
 test('preTransferHash: rejects an unknown coverage_code', async () => {
@@ -150,53 +150,18 @@ test('preTransferHash: rejects an unknown coverage_code', async () => {
   assert.equal(res.body.error, 'UNKNOWN_COVERAGE_CODE');
 });
 
-test('preTransferHash: local fixed-schedule rules still apply — amount mismatch is rejected even though Protosure already attested it', async () => {
+test('preTransferHash: does not re-verify the attester signature or re-run local payout rules — Mendix/Protosure values are trusted as-is', async () => {
   const { app } = setupApp();
+  // Deliberately-wrong signature, signer, and an amount that would have failed FIXED_SCHEDULE —
+  // none of it is re-checked here; that validation now happens once, upstream, against Protosure.
   const body = baseBody({ payoutAmount: 3001 });
+  body.attester.signature = '0x' + 'aa'.repeat(65);
+  body.attester.signer = '0x' + '99'.repeat(20);
+  body.attester.payload_hash = '0x' + '11'.repeat(32);
   const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'AMOUNT_MISMATCH');
-});
-
-test('preTransferHash: PT-01 monthly cool-down still applies (3rd in the same month is rejected)', async () => {
-  const { app } = setupApp();
-  const r1 = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody({ triggerRef: 'TRG-A' }));
-  assert.equal(r1.status, 201);
-  const r2 = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody({ triggerRef: 'TRG-B' }));
-  assert.equal(r2.status, 201);
-  const r3 = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody({ triggerRef: 'TRG-C' }));
-  assert.equal(r3.status, 422);
-  assert.equal(r3.body.error, 'COOLDOWN_EXCEEDED');
-});
-
-test('preTransferHash: rejects an attester signer that is not REGISTERED_SIGNER', async () => {
-  const { app } = setupApp();
-  const OTHER_KEY = 'aa'.repeat(32); // valid 32-byte key, unrelated to REGISTERED_SIGNER
-  const fields = {
-    quoteId: 'KP-2026-001',
-    triggerRef: 'TRG-0001',
-    coverageCode: '0x01',
-    payoutAmount: 3000,
-    recipient: RECIPIENT,
-    monthKey: '202608',
-    contractAddress: PAYOUT_ADDR,
-    chainId: CHAIN_ID,
-  };
-  const { payload_hash, signature, signer } = signAs(OTHER_KEY, fields);
-  const body = {
-    quote_id: fields.quoteId,
-    coverage_code: fields.coverageCode,
-    recipient: fields.recipient,
-    payout_amount: fields.payoutAmount,
-    trigger_ref: fields.triggerRef,
-    incident_timestamp: AUGUST_2026_TOKYO,
-    contract_address: fields.contractAddress,
-    chain_id: fields.chainId,
-    attester: { nonce: 'PSN-0001', signer, signature, payload_hash },
-  };
-  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'SIGNER_NOT_REGISTERED');
+  assert.equal(res.status, 201);
+  assert.equal(res.body.evidenceHash, body.attester.payload_hash);
+  assert.equal(res.body.attester.toLowerCase(), body.attester.signer.toLowerCase());
 });
 
 test('preTransferHash: rejects a contract_address that does not match PAYOUT_ADDR', async () => {

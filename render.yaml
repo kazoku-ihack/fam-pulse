@@ -58,6 +58,11 @@ services:
         sync: false
       - key: PAYOUT_ADDR
         sync: false
+      - key: RIDER_ADDR
+        sync: false # externally-deployed Rider contract — POST /v1/jpyc/transfer targets this instead of
+                    # PAYOUT_ADDR for source:"protosure-direct" attestations (dual-sig submitTrigger)
+      - key: ORACLE_SIGNER_PRIVATE_KEY
+        sync: false # signs Rider's oracleSig at transfer time — required only for the protosure-direct flow
       - key: REGISTERED_SIGNER
         sync: false # tied 1:1 to whichever contract PAYOUT_ADDR points at — see JPYC_ADDR/PAYOUT_ADDR above.
                     # Was a hardcoded non-secret value here until 2026-07-29, when it drifted from

@@ -45,13 +45,22 @@ export function computeInner({ policyId, triggerRef, coverageCode, payoutAmount,
   );
 }
 
-// Signs a precomputed `inner` hash directly via SigningKey — NOT wallet.signMessage, which
-// would re-apply the EIP-191 prefix on top of our already-prefixed digest (double-prefix bug).
-export function signInner(inner, privateKey) {
-  const digest = ethers.hashMessage(ethers.getBytes(inner));
+// Signs an already-final digest directly via SigningKey — NOT wallet.signMessage, which would
+// re-apply the EIP-191 prefix on top of an already-prefixed digest (double-prefix bug). Used both
+// by signInner below (signs its own freshly-wrapped digest) and by callers co-signing a digest
+// someone else already computed (e.g. the Rider contract's oracleSig, signed over the same digest
+// as attesterSig — see routes/payments.js).
+export function signDigest(digest, privateKey) {
   const signingKey = new ethers.SigningKey(normalizeKey(privateKey));
   const signature = signingKey.sign(digest).serialized;
   const signer = ethers.recoverAddress(digest, signature);
+  return { signature, signer };
+}
+
+// Signs a precomputed `inner` hash after applying the EIP-191 prefix.
+export function signInner(inner, privateKey) {
+  const digest = ethers.hashMessage(ethers.getBytes(inner));
+  const { signature, signer } = signDigest(digest, privateKey);
   return { payload_hash: digest, signature, signer };
 }
 

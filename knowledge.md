@@ -21,6 +21,10 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   referencing the pre-update contract address). A full `POST /services/:id/deploys` (same commit,
   fresh container) was required before the new env vars actually took effect. Prefer a real deploy
   over a bare restart when verifying an env var change actually landed.
+  - Note: the `SIGNER_NOT_REGISTERED` gate this bullet originally referenced in
+    `POST /v1/jpyc/preTransferHash` was removed 2026-07-30 (see "Mendix→Protosure-direct
+    attestation flow" below) — `REGISTERED_SIGNER` drift is still real for
+    `GET /v1/attestation/signer/current` and the live-rater path, just no longer for this endpoint.
 
 ## Payout schedule & rules (`src/attestation-rules.js`, `src/coverage.js`)
 
@@ -46,20 +50,20 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   This service no longer signs via `protosure/rater-client.js` for that flow — `POST
   /v1/attestation/trigger` (this service asks Protosure/stub to sign) still exists for other
   callers, but is a separate, still-valid path. `preTransferHash` is the new step in between:
-  Mendix already has a Protosure-signed attestation and hands it to us to verify + persist before
-  calling the unchanged `POST /v1/jpyc/transfer` to execute it on-chain.
-- **Deterministic rules still own the money even here** — `validateRules()` runs against the
-  incoming `coverage_code`/`payout_amount` exactly as it does for `/v1/attestation/trigger`,
-  despite Protosure having already attested it. This was a deliberate design decision (not an
-  oversight): an external attestation is not itself sufficient authorization by this repo's
-  architecture ("Claude never gates money" — and neither does an unverified external service).
-- **The attester's signature is independently re-verified, not trusted as a channel-authenticated
-  blob.** Unlike the live-rater path (`rater-client.js`, which trusts an HTTPS+Basic-auth call
-  *we* made), Mendix relays the attestation to us over a channel we don't control — so this
-  endpoint recomputes the canonical digest via `protosure/stub.js#computeInner` (the same function
-  `MimamorParametric.sol`/the offline stub use) and calls `ethers.recoverAddress(digest,
-  signature)`, rejecting on any mismatch (`PAYLOAD_HASH_MISMATCH`, `SIGNATURE_SIGNER_MISMATCH`) —
-  never a bare string comparison of the given fields.
+  Mendix already has a Protosure-signed attestation and hands it to us to persist before calling
+  the unchanged `POST /v1/jpyc/transfer` to execute it on-chain.
+- **Scope change (2026-07-30): local rule validation and signature re-verification were removed
+  from this endpoint at the requester's explicit direction** — Mendix now validates against
+  Protosure separately, upstream, and `preTransferHash`/`transfer` are called sequentially trusting
+  that upstream result. This reverses the 2026-07-29 design decision below it used to make
+  (`validateRules()` no longer runs here; `attester.signature`/`payload_hash`/`signer` are stored
+  and echoed back as given, not recomputed/recovered/checked against `REGISTERED_SIGNER`). The
+  `contract_address`/`chain_id` cross-checks against `PAYOUT_ADDR`/`CHAIN_ID` were deliberately kept
+  (out of scope of that direction — they're deployment sanity checks, not attestation validation).
+  `validateRules()` and independent signature verification are still very much in force on
+  `POST /v1/attestation/trigger` and the live-rater path (`rater-client.js`) — this change is
+  scoped to the Mendix-direct endpoint only; don't assume it generalizes elsewhere in the payout
+  path without checking.
 - **`coverage_code` arrives as the on-chain hex byte** (e.g. `"0x01"`), not the human `triggerCode`
   (`"PT-01"`) — reverse-mapped via `COVERAGE_CODE` since every local rule is keyed by
   `triggerCode`. An unrecognized byte is `400 UNKNOWN_COVERAGE_CODE`, not a 422 rule failure.
@@ -68,11 +72,39 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   column (Protosure's own signing-scheme nonce, for audit only); `trigger_ref` remains the sole
   on-chain dedup key (`usedNonce[triggerRef]` in `MimamorParametric.sol`), exactly as before this
   endpoint existed.
-- **`oracle`/`oracleSig` in the response are metadata, not a second cryptographic signature** —
-  confirmed by the request author. `oracle` echoes this service's own configured signer identity
-  (`REGISTERED_SIGNER`) for audit purposes; `oracleSig` is always `null`. Only the attester's
-  (Protosure's) signature actually authorizes `submitTrigger` on-chain — `MimamorParametric.sol`
-  has no dual-signature verification and none was added for this endpoint.
+- **`oracle`/`oracleSig` in the `preTransferHash` *response* are still just metadata, always
+  `null`/`REGISTERED_SIGNER`-echo** — nothing changed here by the 2026-07-30 Rider addition below.
+  The *real* `oracleSig` used on-chain doesn't exist yet at `preTransferHash` time; it's produced
+  fresh at `POST /v1/jpyc/transfer` time (see next bullet), against a completely different signer
+  (`ORACLE_SIGNER_PRIVATE_KEY`, not `REGISTERED_SIGNER`). Don't confuse the two `oracleSig`s.
+- **Scope change (2026-07-30): `POST /v1/jpyc/transfer` now calls a different, externally-deployed
+  "Rider" contract for `source:"protosure-direct"` attestations only**, because that contract's
+  `submitTrigger` verifies *two* signatures (`oracleSig`, `attesterSig`) over the same digest,
+  unlike `MimamorParametric.sol`'s single `signature` param — confirmed by the request author, not
+  derivable from this repo (Rider's Solidity source isn't here; only the ABI fragment
+  `src/chain/chain.js#RIDER_ABI` is, hand-written from the confirmed function signature). Mechanics:
+  - Routing is keyed on the stored `attestations.source` column, checked in
+    `executePayoutOnChain`/`isChainReadyFor` (`src/routes/payments.js`) — `'protosure-direct'` (only
+    ever set by `preTransferHash`) → `chain.getRiderContract()` at `RIDER_ADDR`; every other source
+    (`stub`/`protosure`/`stub-fallback`, from `POST /v1/attestation/trigger`) → unchanged
+    `chain.getPayoutContract()` at `PAYOUT_ADDR`.
+  - `attesterSig` is exactly `attestations.signature` (Protosure's, stored verbatim at
+    `preTransferHash` time, never regenerated).
+  - `oracleSig` is generated **fresh at transfer time**, not stored anywhere — this service signs
+    `attestations.payloadHash` (the exact same digest `attesterSig` covers) with
+    `ORACLE_SIGNER_PRIVATE_KEY`, via `signDigest()` (`src/protosure/stub.js`, factored out of
+    `signInner` for this reuse). Confirmed by the request author: oracle co-signs the *identical*
+    digest, not a derived/different one.
+  - `contract_address` in the `preTransferHash` request body is still checked against `PAYOUT_ADDR`,
+    **not** `RIDER_ADDR` — confirmed by the request author, even though the actual on-chain call at
+    transfer time targets Rider. Not yet explained why the digest Protosure signs would bind to
+    `PAYOUT_ADDR` if Rider is the contract that ultimately verifies it (Rider's own
+    `address(this)`-equivalent binding, if any, is unknown — its source isn't in this repo). Revisit
+    if `CONTRACT_ADDRESS_MISMATCH`/signature-recovery problems show up against the real Rider
+    deployment.
+  - Missing `ORACLE_SIGNER_PRIVATE_KEY` fails safe: `503 ORACLE_SIGNER_NOT_CONFIGURED` from
+    `/v1/jpyc/transfer`, same fail-safe pattern as `CHAIN_NOT_CONFIGURED` elsewhere — see
+    `OracleSignerNotConfiguredError` in `src/routes/payments.js`.
 - **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
   unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
   `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than

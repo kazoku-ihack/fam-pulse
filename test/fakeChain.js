@@ -7,6 +7,7 @@ export function makeFakeChain(overrides = {}) {
   return {
     isRelayerConfigured: () => true,
     isChainDeployed: () => true,
+    isRiderDeployed: () => true,
     getRelayerWallet: () => ({ address: '0xFakeRelayerAddress00000000000000000001' }),
     getJpycContract: () => ({
       balanceOf: async () => 1_000_000n,
@@ -25,6 +26,21 @@ export function makeFakeChain(overrides = {}) {
         };
       },
       isRegisteredSigner: async () => true,
+    }),
+    // Rider's submitTrigger takes both oracleSig and attesterSig — same replay-guard shape as
+    // getPayoutContract's mock above, just with the extra arg.
+    getRiderContract: () => ({
+      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig) => {
+        if (usedTriggerRefs.has(triggerRef)) {
+          const err = new Error('execution reverted: NONCE_ALREADY_USED');
+          err.reason = 'NONCE_ALREADY_USED';
+          throw err;
+        }
+        usedTriggerRefs.add(triggerRef);
+        return {
+          wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }),
+        };
+      },
     }),
     explorerUrl: (hash) => `https://testnet.snowtrace.io/tx/${hash}`,
     ...overrides,

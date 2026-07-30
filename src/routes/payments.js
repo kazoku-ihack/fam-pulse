@@ -1,12 +1,11 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
-import { ethers } from 'ethers';
 import { z } from 'zod';
 import { appendEvent, getParentId } from '../db.js';
 import { requireRole } from '../auth.js';
-import { validateRules, monthKeyTokyo } from '../attestation-rules.js';
+import { monthKeyTokyo } from '../attestation-rules.js';
 import { COVERAGE_CODE } from '../coverage.js';
-import { computeInner } from '../protosure/stub.js';
+import { signDigest } from '../protosure/stub.js';
 import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
 
@@ -42,10 +41,50 @@ export function computeNetCredit(lines) {
     .reduce((sum, l) => sum + l.amount, 0);
 }
 
+export class OracleSignerNotConfiguredError extends Error {
+  constructor(message) {
+    super(message);
+    this.code = 'ORACLE_SIGNER_NOT_CONFIGURED';
+  }
+}
+
+// The externally-deployed Rider contract's submitTrigger verifies two independent signatures over
+// the same digest — attesterSig (Protosure's, already stored on the attestation) and oracleSig,
+// which this service produces itself at transfer time from ORACLE_SIGNER_PRIVATE_KEY. Co-signing
+// the identical digest, not a fresh one, per the confirmed Rider contract behavior.
+function signOracle(digest) {
+  const key = process.env.ORACLE_SIGNER_PRIVATE_KEY;
+  if (!key) throw new OracleSignerNotConfiguredError('ORACLE_SIGNER_PRIVATE_KEY not set');
+  return signDigest(digest, key).signature;
+}
+
+function isChainReadyFor(chain, source) {
+  return source === 'protosure-direct' ? chain.isRiderDeployed() : chain.isChainDeployed();
+}
+
 // Values are echoed verbatim from the stored attestation — never recomputed — so what gets
-// submitted on-chain is exactly what was validated and signed at attestation time.
+// submitted on-chain is exactly what was validated and signed at attestation time. Attestations
+// sourced from the Mendix/Protosure-direct flow (source:"protosure-direct") go to the Rider
+// contract instead of the original single-signature MimamorParametric — Rider's submitTrigger has
+// a different arg structure (oracleSig + attesterSig instead of one `signature`).
 async function executePayoutOnChain(chain, att) {
   const wallet = chain.getRelayerWallet();
+  if (att.source === 'protosure-direct') {
+    const rider = chain.getRiderContract(wallet);
+    const oracleSig = signOracle(att.payloadHash);
+    const tx = await rider.submitTrigger(
+      att.policyId,
+      att.triggerRef,
+      att.coverageCode,
+      BigInt(att.payoutAmount),
+      att.recipient,
+      BigInt(att.monthKey),
+      oracleSig,
+      att.signature
+    );
+    const receipt = await tx.wait();
+    return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
+  }
   const payout = chain.getPayoutContract(wallet);
   const tx = await payout.submitTrigger(
     att.policyId,
@@ -86,11 +125,12 @@ const transferSchema = z.object({
 });
 
 // Mendix now calls Protosure directly for the attestation itself — this service no longer signs
-// via protosure/rater-client.js for this flow. preTransferHash is the step in between: it
-// receives Protosure's already-signed attestation, independently verifies it, applies this
-// repo's own payout rules (deterministic rules still own the money, even though Protosure already
-// attested — see attestation-rules.js), and persists an `attestations` row exactly like
-// POST /v1/attestation/trigger does, so POST /v1/jpyc/transfer can execute it unchanged.
+// via protosure/rater-client.js for this flow, and no longer independently re-verifies Protosure's
+// signature or re-runs the local fixed-schedule/cool-down/cap rules against it: the caller
+// (Mendix, via preTransferHash then transfer, called sequentially) is trusted to supply an
+// already-validated attestation. preTransferHash's job is just to persist an `attestations` row
+// exactly like POST /v1/attestation/trigger does, so POST /v1/jpyc/transfer can execute it
+// unchanged.
 const preTransferHashSchema = z.object({
   quote_id: z.string().min(1),
   coverage_code: z.string().min(1),
@@ -176,46 +216,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     }
     const normalizedIncidentTimestamp = normalizeIncidentTimestamp(incident_timestamp);
     const monthKey = monthKeyTokyo(normalizedIncidentTimestamp);
-
-    // Deterministic rules still own the money — Protosure's own attestation doesn't bypass this;
-    // same FIXED_SCHEDULE / PT-01 cool-down / cap_ledger headroom checks
-    // POST /v1/attestation/trigger already applies.
-    const rules = validateRules({ db, triggerCode, payoutAmount: payout_amount, monthKey, coverageCode: coverage_code });
-    if (!rules.ok) return res.status(422).json({ error: rules.reason });
-
-    // Independently verify the attester's signature — never trust a signature blob relayed
-    // through Mendix without recomputing it ourselves. Reuses the exact digest scheme
-    // MimamorParametric.sol / protosure/stub.js already use, so it can never drift from what the
-    // contract will actually recover on submitTrigger.
-    const inner = computeInner({
-      policyId: quote_id,
-      triggerRef: trigger_ref,
-      coverageCode: coverage_code,
-      payoutAmount: payout_amount,
-      recipient,
-      monthKey,
-      contractAddress: contract_address,
-      chainId: chain_id,
-    });
-    const digest = ethers.hashMessage(ethers.getBytes(inner));
-    if (digest.toLowerCase() !== attester.payload_hash.toLowerCase()) {
-      return res.status(422).json({ error: 'PAYLOAD_HASH_MISMATCH' });
-    }
-
-    let recovered;
-    try {
-      recovered = ethers.recoverAddress(digest, attester.signature);
-    } catch (e) {
-      return res.status(422).json({ error: 'INVALID_SIGNATURE', message: e.message });
-    }
-    if (recovered.toLowerCase() !== attester.signer.toLowerCase()) {
-      return res.status(422).json({ error: 'SIGNATURE_SIGNER_MISMATCH' });
-    }
-
-    const registeredSigner = String(process.env.REGISTERED_SIGNER || '').toLowerCase();
-    if (!registeredSigner || attester.signer.toLowerCase() !== registeredSigner) {
-      return res.status(422).json({ error: 'SIGNER_NOT_REGISTERED' });
-    }
+    const digest = attester.payload_hash;
 
     const id = randomUUID();
     db.prepare(
@@ -292,7 +293,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     if (!underDemoTxLimit()) {
       return res.json({ status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' });
     }
-    if (!chain.isChainDeployed() || !chain.isRelayerConfigured()) {
+    if (!isChainReadyFor(chain, att.source) || !chain.isRelayerConfigured()) {
       return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
     }
 
@@ -310,6 +311,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       res.json({ status: 'paid', txHash, explorerUrl, signer: att.signer, source: att.source, payloadHash: att.payloadHash });
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: att.id });
+      if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return res.status(503).json({ error: e.code });
       const mapped = mapChainError(e);
       if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
       res.status(mapped.status).json(mapped);
@@ -338,7 +340,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     if (!underDemoTxLimit()) {
       return res.json({ status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' });
     }
-    if (!chain.isChainDeployed() || !chain.isRelayerConfigured()) {
+    if (!isChainReadyFor(chain, attestation.source) || !chain.isRelayerConfigured()) {
       return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
     }
 
@@ -365,6 +367,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       });
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: attestation.id });
+      if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return res.status(503).json({ error: e.code });
       const mapped = mapChainError(e);
       if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, attestation.id);
       res.status(mapped.status).json(mapped);
