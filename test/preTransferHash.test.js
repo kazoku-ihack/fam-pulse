@@ -205,6 +205,8 @@ test('preTransferHash: rejects a contract_address that does not match PAYOUT_ADD
   const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
   assert.equal(res.status, 422);
   assert.equal(res.body.error, 'CONTRACT_ADDRESS_MISMATCH');
+  assert.equal(res.body.expected, PAYOUT_ADDR);
+  assert.equal(res.body.received.toLowerCase(), body.contract_address.toLowerCase());
 });
 
 test('preTransferHash: rejects a chain_id that does not match CHAIN_ID', async () => {
@@ -213,4 +215,17 @@ test('preTransferHash: rejects a chain_id that does not match CHAIN_ID', async (
   const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
   assert.equal(res.status, 422);
   assert.equal(res.body.error, 'CHAIN_ID_MISMATCH');
+});
+
+test('preTransferHash: accepts incident_timestamp in unix seconds and normalizes monthkey correctly', async () => {
+  const { app } = setupApp();
+  const body = baseBody();
+  body.incident_timestamp = Math.floor(AUGUST_2026_TOKYO / 1000);
+
+  const pre = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
+  assert.equal(pre.status, 201);
+
+  const att = await request(app).get(`/v1/attestation/${pre.body.id}`).set('x-api-key', API_KEY);
+  assert.equal(att.status, 200);
+  assert.equal(att.body.monthKey, '202608');
 });

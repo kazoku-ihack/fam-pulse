@@ -807,7 +807,7 @@ export const openApiSpec = {
               recipient: { type: 'string' },
               payout_amount: { type: 'number' },
               trigger_ref: { type: 'string' },
-              incident_timestamp: { type: 'integer', description: 'unix ms' },
+              incident_timestamp: { type: 'integer', description: 'unix timestamp in seconds or milliseconds' },
               contract_address: { type: 'string', description: 'must match this deployment\'s PAYOUT_ADDR' },
               chain_id: { type: 'string' },
               parentId: { type: 'string' },
@@ -849,6 +849,7 @@ export const openApiSpec = {
             'CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH / PAYLOAD_HASH_MISMATCH / INVALID_SIGNATURE / ' +
             'SIGNATURE_SIGNER_MISMATCH / SIGNER_NOT_REGISTERED (attestation verification)'
           ),
+          503: errRes('CHAIN_NOT_CONFIGURED (PAYOUT_ADDR unset)'),
         },
       },
     },

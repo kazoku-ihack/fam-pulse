@@ -109,6 +109,11 @@ const preTransferHashSchema = z.object({
   }),
 });
 
+function normalizeIncidentTimestamp(ts) {
+  // Accept both unix seconds and unix milliseconds from upstream callers
+  return ts < 1e12 ? ts * 1000 : ts;
+}
+
 export function paymentsRouter(db, { chain = chainDefault } = {}) {
   const router = Router();
 
@@ -143,16 +148,34 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     )?.[0];
     if (!triggerCode) return res.status(400).json({ error: 'UNKNOWN_COVERAGE_CODE' });
 
+    const configuredPayoutAddress = String(process.env.PAYOUT_ADDR || '');
+    const configuredChainId = String(process.env.CHAIN_ID || '43113');
+    if(!configuredPayoutAddress){
+      return res.status(503).json({error : 'CHAIN_NOT_CONFIGURED'});
+    }
     // The digest binds contract_address/chain_id implicitly, but a mismatch would otherwise only
     // surface as a wasted, later on-chain revert — fail fast instead.
-    if (contract_address.toLowerCase() !== String(process.env.PAYOUT_ADDR || '').toLowerCase()) {
-      return res.status(422).json({ error: 'CONTRACT_ADDRESS_MISMATCH' });
+    if (contract_address.toLowerCase() !== configuredPayoutAddress.toLowerCase()) {
+      const jpycAddr = String(process.env.JPYC_ADDR || '').toLowerCase();
+      const hint = contract_address.toLowerCase() === jpycAddr && jpycAddr ? 'contract_address must be PAYOUT_ADDR (payout contract), not JPYC_ADDR (token_contract)'
+      : undefined;
+      return res.status(422).json({ 
+        error: 'CONTRACT_ADDRESS_MISMATCH',
+        expected: configuredPayoutAddress,
+        received: contract_address,
+        ...(hint ? {hint}:{}),
+      });
     }
-    if (String(chain_id) !== String(process.env.CHAIN_ID || '43113')) {
-      return res.status(422).json({ error: 'CHAIN_ID_MISMATCH' });
+    //if (String(chain_id) !== String(process.env.CHAIN_ID || '43113')) {
+    if (String(chain_id) !== configuredChainId) {
+      return res.status(422).json({ 
+        error: 'CHAIN_ID_MISMATCH',
+        expected: configuredChainId,
+        received: String(chain_id), 
+      });
     }
-
-    const monthKey = monthKeyTokyo(incident_timestamp);
+    const normalizedIncidentTimestamp = normalizeIncidentTimestamp(incident_timestamp);
+    const monthKey = monthKeyTokyo(normalizedIncidentTimestamp);
 
     // Deterministic rules still own the money — Protosure's own attestation doesn't bypass this;
     // same FIXED_SCHEDULE / PT-01 cool-down / cap_ledger headroom checks
@@ -204,7 +227,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       triggerCode,
       payout_amount,
       recipient,
-      incident_timestamp,
+      normalizedIncidentTimestamp,
       trigger_ref,
       coverage_code,
       monthKey,
