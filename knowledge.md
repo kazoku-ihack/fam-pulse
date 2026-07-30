@@ -188,6 +188,20 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
     only at the `jpyc.transfer()` call site, never touch the digest-input value). This is a
     stopgap, not a fix for the real Rider integration — revert to the Rider path by unsetting
     `RIDER_FALLBACK_ADDR` once Protosure/Rider's actual digest mismatch is reconciled upstream.
+  - **Repeatable rehearsal script: `src/chain/rehearse-protosure-direct.js`** — drives the real
+    `POST /v1/jpyc/preTransferHash` → `POST /v1/jpyc/transfer` HTTP flow against a live deployment
+    end-to-end, signing with the registered rehearsal signer (`STUB_SIGNER_PRIVATE_KEY`'s address)
+    since this repo doesn't hold Protosure's real key. Two things a naive rehearsal script gets
+    wrong (confirmed by hitting both live): (1) the claimed `attester.signer` field must equal
+    `ATTESTER_ADDRESS` — checked directly, not by recovery, so this is set explicitly rather than
+    derived from the signing key; (2) the digest itself must bind to whatever contract actually
+    verifies it on-chain (`RIDER_FALLBACK_ADDR`, via `computeInner`'s `contractAddress` param) —
+    **not** `PAYOUT_ADDR`, even though the request body's separate `contract_address` field must
+    still be `PAYOUT_ADDR` to pass `CONTRACT_ADDRESS_MISMATCH`. Confirmed live: signing against
+    `PAYOUT_ADDR` (matching the request body) produced `502 SIGNER_MISMATCH` — recovers to a
+    different address than intended once the real fallback contract recomputes its own digest with
+    its own `address(this)`. Each run generates a fresh `trigger_ref` so repeats never collide on
+    `NONCE_ALREADY_USED`.
 - **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
   unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
   `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than
