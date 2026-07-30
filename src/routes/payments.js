@@ -343,6 +343,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: att.id });
       if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return res.status(503).json({ error: e.code });
+      console.error('[chain] payout submission failed:', e.reason || e.shortMessage || e.message || e);
       const mapped = mapChainError(e);
       if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
       res.status(mapped.status).json(mapped);
@@ -399,6 +400,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     } catch (e) {
       if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: attestation.id });
       if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return res.status(503).json({ error: e.code });
+      console.error('[chain] payout submission failed:', e.reason || e.shortMessage || e.message || e);
       const mapped = mapChainError(e);
       if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, attestation.id);
       res.status(mapped.status).json(mapped);
