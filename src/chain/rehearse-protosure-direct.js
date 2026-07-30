@@ -7,21 +7,23 @@
 //   API_BASE_URL=https://fam-pulse-api.onrender.com \
 //   API_KEY=<x-api-key> \
 //   STUB_SIGNER_PRIVATE_KEY=<the rehearsal signer's private key> \
-//   PAYOUT_ADDR=<must equal the live deployment's PAYOUT_ADDR — this only satisfies preTransferHash's
-//     CONTRACT_ADDRESS_MISMATCH sanity check, it is NOT what the signature is bound to, see below> \
-//   RIDER_FALLBACK_ADDR=<the actual contract that verifies the signature on-chain> \
+//   PAYOUT_ADDR=<must equal the live deployment's PAYOUT_ADDR> \
 //   CHAIN_ID=43113 \
 //   ATTESTER_ADDRESS=<must equal the live deployment's ATTESTER_ADDRESS> \
 //   node src/chain/rehearse-protosure-direct.js [coverageCode] [payoutAmount]
 //
 // e.g. node src/chain/rehearse-protosure-direct.js 0x02 30000
 //
-// The digest is bound to RIDER_FALLBACK_ADDR, not PAYOUT_ADDR — it must match whatever contract
-// actually verifies it on-chain (MimamorParametric.sol's computeInner binds `address(this)`), even
-// though preTransferHash's request body separately requires contract_address == PAYOUT_ADDR (a
-// deliberate, decoupled sanity check — see knowledge.md's "contract_address is still checked
-// against PAYOUT_ADDR, not RIDER_ADDR" note). Point this at RIDER_ADDR instead once the real Rider
-// digest mismatch is fixed and RIDER_FALLBACK_ADDR is retired.
+// The digest is bound to PAYOUT_ADDR — matching both preTransferHash's request-body
+// CONTRACT_ADDRESS_MISMATCH check AND what RIDER_FALLBACK_ADDR (MimamorParametricBind.sol)
+// actually verifies against on-chain, since that contract checks a settable `bindAddress` (set to
+// PAYOUT_ADDR at deploy time) instead of its own address(this) — specifically so a fallback
+// contract living at a different address can still verify signatures signed against PAYOUT_ADDR,
+// which is what Protosure's real signatures are bound to and therefore what this rehearsal signer
+// must match too. An earlier version of both this script and the fallback contract bound the
+// digest to the fallback's own address instead — that only ever worked for self-generated
+// attestations like this script's, and silently failed for every real Mendix-originated one
+// (confirmed live — see knowledge.md's RIDER_FALLBACK_ADDR/MimamorParametricBind investigation).
 //
 // Each run generates a fresh, unique trigger_ref (so on-chain NONCE_ALREADY_USED never blocks a
 // repeat run) and prints the resulting Snowtrace link once the transfer confirms.
@@ -33,7 +35,6 @@ const API_BASE_URL = process.env.API_BASE_URL || 'https://fam-pulse-api.onrender
 const API_KEY = required('API_KEY');
 const STUB_SIGNER_PRIVATE_KEY = required('STUB_SIGNER_PRIVATE_KEY');
 const PAYOUT_ADDR = required('PAYOUT_ADDR');
-const SIGNING_CONTRACT_ADDR = process.env.RIDER_FALLBACK_ADDR || process.env.RIDER_ADDR || PAYOUT_ADDR;
 const CHAIN_ID = process.env.CHAIN_ID || '43113';
 const ATTESTER_ADDRESS = required('ATTESTER_ADDRESS');
 const RECIPIENT = process.env.RECIPIENT || '0xA615b21149212D63713Ad566103476A629a3417d';
@@ -59,7 +60,7 @@ async function main() {
     payoutAmount,
     recipient: RECIPIENT,
     monthKey,
-    contractAddress: SIGNING_CONTRACT_ADDR,
+    contractAddress: PAYOUT_ADDR,
     chainId: CHAIN_ID,
   });
   // Signed by the registered rehearsal signer, not Protosure's real key — see header comment.

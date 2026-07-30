@@ -68,10 +68,12 @@ services:
                     # recovers to this address before persisting. Referred to first, ahead of
                     # REGISTERED_SIGNER (which is a fallback only, for MimamorParametric's own signer).
       - key: RIDER_FALLBACK_ADDR
-        sync: false # workaround: unmodified MimamorParametric wrapping the real JPYC_ADDR token, deployed
-                    # via deploy-rider-fallback.js — takes priority over RIDER_ADDR for protosure-direct
-                    # transfers when set, since Rider's real deployment rejects Protosure's actual
-                    # attesterSig (digest mismatch — see knowledge.md). Unset to revert to the Rider path.
+        sync: false # workaround: MimamorParametricBind wrapping the real JPYC_ADDR token, bound to
+                    # PAYOUT_ADDR (not its own address — deploy-rider-fallback-bind.js), so it verifies
+                    # the same digest Protosure actually signs. Takes priority over RIDER_ADDR for
+                    # protosure-direct transfers when set, since Rider's real deployment rejects
+                    # Protosure's actual attesterSig (digest mismatch — see knowledge.md). Unset to
+                    # revert to the Rider path.
       - key: REGISTERED_SIGNER
         sync: false # tied 1:1 to whichever contract PAYOUT_ADDR points at — see JPYC_ADDR/PAYOUT_ADDR above.
                     # Was a hardcoded non-secret value here until 2026-07-29, when it drifted from

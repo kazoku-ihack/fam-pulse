@@ -1,3 +1,11 @@
+// SUPERSEDED (2026-07-30, same day) by deploy-rider-fallback-bind.js — this version's
+// MimamorParametric.sol binds address(this) into its digest, which only ever verifies signatures
+// signed against ITS OWN address. That only worked for attestations the rehearsal script/endpoint
+// generated themselves; every real Mendix/Protosure-originated attestation (signed against
+// PAYOUT_ADDR) failed SIGNER_MISMATCH against a contract deployed here. Kept for history — do not
+// deploy from this file again. See knowledge.md's RIDER_FALLBACK_ADDR/MimamorParametricBind
+// investigation.
+//
 // One-off fallback deploy script — NOT the primary deploy path (see deploy.js for that). Run via:
 //   npx hardhat run src/chain/deploy-rider-fallback.js --network fuji
 //

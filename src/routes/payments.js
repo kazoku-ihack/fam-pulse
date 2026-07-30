@@ -437,10 +437,13 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       if (!process.env.PAYOUT_ADDR) return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
       const recipient = db.prepare("SELECT address FROM wallets WHERE name = 'sakura'").get()?.address;
       if (!recipient) return res.status(503).json({ error: 'RECIPIENT_NOT_CONFIGURED' });
-      // Digest binds whatever contract actually verifies it on-chain (RIDER_FALLBACK_ADDR when
-      // configured), NOT PAYOUT_ADDR — a real ECDSA-recovery mismatch if these are conflated, see
-      // knowledge.md's rehearsal-script investigation.
-      const signingContractAddr = process.env.RIDER_FALLBACK_ADDR || process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
+      // Digest binds PAYOUT_ADDR — RIDER_FALLBACK_ADDR (MimamorParametricBind.sol) verifies against
+      // this configurable bind address rather than its own address(this), specifically so it can
+      // check signatures signed against PAYOUT_ADDR (which is what Protosure actually signs, and
+      // therefore what this rehearsal signer must match too) while living at a different address.
+      // See knowledge.md's "bad attester sig" / RIDER_FALLBACK_ADDR investigation for why the first
+      // (non-bind) version of this fallback only worked for self-generated attestations.
+      const signingContractAddr = process.env.PAYOUT_ADDR;
       const chainIdEnv = process.env.CHAIN_ID || '43113';
 
       const triggerRef = `REHEARSAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
