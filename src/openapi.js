@@ -885,6 +885,39 @@ export const openApiSpec = {
         },
       },
     },
+    '/v1/jpyc/rehearseTransfer': {
+      post: {
+        tags: ['Payments'],
+        summary:
+          'Rehearsal-only: exercises the protosure-direct payout path without a real Mendix/Protosure call. ' +
+          'With no attestationId, generates a fresh PT-01 attestation signed by the registered "rehearsal ' +
+          'signer" (STUB_SIGNER_PRIVATE_KEY\'s address, not Protosure\'s real key) and pays it out immediately. ' +
+          'With an attestationId, transfers that existing attestation instead (equivalent to POST ' +
+          '/v1/jpyc/transfer). All signing material (key, target contract, expected attester, chain id) is read ' +
+          'from server-side env at request time — the only accepted input is the optional attestationId, so ' +
+          'this cannot be used to mint an attestation for an arbitrary amount/recipient/coverage code.',
+        requestBody: jsonBody({
+          type: 'object',
+          properties: { attestationId: { type: 'string', description: 'if omitted, a fresh PT-01 rehearsal attestation is generated and paid out' } },
+        }),
+        responses: {
+          200: jsonResponse('paid/pending/DEMO_TX_LIMIT, same shape as POST /v1/jpyc/transfer plus attestationId', {
+            type: 'object',
+            properties: {
+              attestationId: { type: 'string' },
+              status: { type: 'string', enum: ['paid', 'pending', 'DEMO_TX_LIMIT'] },
+              txHash: { type: 'string' },
+              explorerUrl: { type: 'string' },
+              signer: { type: 'string' },
+              source: { type: 'string', example: 'protosure-direct' },
+              payloadHash: { type: 'string' },
+            },
+          }),
+          403: errRes('ATTESTATION_REQUIRED — unknown or unsigned attestationId'),
+          503: errRes('SIGNER_NOT_CONFIGURED (STUB_SIGNER_PRIVATE_KEY) / ATTESTER_ADDRESS_NOT_CONFIGURED / RECIPIENT_NOT_CONFIGURED (SAKURA_WALLET_ADDR) / CHAIN_NOT_CONFIGURED'),
+        },
+      },
+    },
     '/v1/jpyc/batchTransfer': {
       post: {
         tags: ['Payments'],

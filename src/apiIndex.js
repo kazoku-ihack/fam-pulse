@@ -51,6 +51,7 @@ export const API_INDEX = {
 
     { method: 'GET', path: '/v1/wallet/balance', auth: 'x-api-key' },
     { method: 'POST', path: '/v1/jpyc/transfer', auth: 'x-api-key' },
+    { method: 'POST', path: '/v1/jpyc/rehearseTransfer', auth: 'x-api-key', description: 'rehearsal-only — see openapi' },
     { method: 'POST', path: '/v1/jpyc/batchTransfer', auth: 'x-api-key' },
     { method: 'GET', path: '/v1/settlement/current', auth: 'x-api-key' },
     { method: 'PATCH', path: '/v1/settlement/:id/line/:lineId', auth: 'x-api-key', description: 'body: { disputed: boolean }' },

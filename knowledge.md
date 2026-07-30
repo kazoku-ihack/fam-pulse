@@ -202,6 +202,20 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
     different address than intended once the real fallback contract recomputes its own digest with
     its own `address(this)`. Each run generates a fresh `trigger_ref` so repeats never collide on
     `NONCE_ALREADY_USED`.
+  - **`POST /v1/jpyc/rehearseTransfer`** (`src/routes/payments.js`) — the same rehearsal flow as an
+    API endpoint instead of a standalone script, requested explicitly so it could be triggered
+    without needing local env values at all. Deliberately accepts only one input,
+    `attestationId` (optional) — every signing detail (`STUB_SIGNER_PRIVATE_KEY`,
+    `RIDER_FALLBACK_ADDR`/`RIDER_ADDR`/`PAYOUT_ADDR`, `ATTESTER_ADDRESS`/`REGISTERED_SIGNER`,
+    `CHAIN_ID`) is read from server-side env at request time, and the generated attestation is
+    always PT-01/¥3,000 to the seeded `sakura` wallet (`SAKURA_WALLET_ADDR`) — so this can't be
+    used to mint an attestation for an arbitrary amount/recipient/coverage code. Mounted under
+    `/v1/jpyc/*` (requires `x-api-key`, same as `preTransferHash`/`transfer`), **not**
+    `/v1/demo/*` — `/v1/demo/*` is mounted before `apiKeyAuth` (so the public Judge Console can
+    reach it with no key at all), which would be the wrong gate for a route that moves real funds.
+    Shares its actual on-chain submission logic (`performTransfer`) with `POST /v1/jpyc/transfer`
+    — refactored out of that route rather than duplicated, since this made a third near-identical
+    caller.
 - **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
   unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
   `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than

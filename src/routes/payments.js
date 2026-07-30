@@ -6,7 +6,7 @@ import { appendEvent, getParentId } from '../db.js';
 import { requireRole } from '../auth.js';
 import { monthKeyTokyo } from '../attestation-rules.js';
 import { COVERAGE_CODE } from '../coverage.js';
-import { signDigest } from '../protosure/stub.js';
+import { signDigest, computeInner, signInner } from '../protosure/stub.js';
 import * as chainDefault from '../chain/chain.js';
 import { asyncHandler } from '../asyncHandler.js';
 
@@ -177,6 +177,44 @@ const transferSchema = z.object({
   incidentId: z.string().optional(),
   parentId: z.string().optional(),
 });
+
+const rehearseTransferSchema = z.object({
+  attestationId: z.string().min(1).optional(),
+});
+
+// Shared by /v1/jpyc/transfer and /v1/jpyc/rehearseTransfer — both submit an already-signed
+// attestation on-chain and map the same set of outcomes (paid/pending/DEMO_TX_LIMIT/errors) the
+// same way. Returns { httpStatus, body } rather than writing to res directly so callers can add
+// their own fields (e.g. rehearseTransfer echoes back the generated attestationId).
+async function performTransfer(db, chain, att, { parentId, incidentId } = {}) {
+  if (!underDemoTxLimit()) {
+    return { httpStatus: 200, body: { status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' } };
+  }
+  if (!isChainReadyFor(chain, att.source) || !chain.isRelayerConfigured()) {
+    return { httpStatus: 503, body: { error: 'CHAIN_NOT_CONFIGURED' } };
+  }
+
+  try {
+    const { txHash, explorerUrl } = await withTimeout(executePayoutOnChain(chain, att), 10000);
+    recordDemoTx();
+    db.prepare(`UPDATE attestations SET status = 'paid', txHash = ? WHERE id = ?`).run(txHash, att.id);
+    appendEvent(db, {
+      parentId: parentId || null,
+      type: 'payout',
+      title: `Payout sent: ¥${att.payoutAmount}`,
+      deepLink: explorerUrl,
+      refId: incidentId || att.id,
+    });
+    return { httpStatus: 200, body: { status: 'paid', txHash, explorerUrl, signer: att.signer, source: att.source, payloadHash: att.payloadHash } };
+  } catch (e) {
+    if (e.code === 'TIMEOUT') return { httpStatus: 200, body: { status: 'pending', attestationId: att.id } };
+    if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return { httpStatus: 503, body: { error: e.code } };
+    console.error('[chain] payout submission failed:', e.reason || e.shortMessage || e.message || e);
+    const mapped = mapChainError(e);
+    if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
+    return { httpStatus: mapped.status, body: mapped };
+  }
+}
 
 // Mendix now calls Protosure directly for the attestation itself — this service no longer signs
 // via protosure/rater-client.js for this flow, and no longer re-runs the local fixed-schedule/
@@ -368,33 +406,80 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       return res.status(400).json({ error: 'RECIPIENT_MISMATCH' });
     }
 
-    if (!underDemoTxLimit()) {
-      return res.json({ status: 'DEMO_TX_LIMIT', message: 'Demo transaction cap reached this hour — try again later' });
-    }
-    if (!isChainReadyFor(chain, att.source) || !chain.isRelayerConfigured()) {
-      return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
+    const result = await performTransfer(db, chain, att, { parentId, incidentId });
+    res.status(result.httpStatus).json(result.body);
+  }));
+
+  // Rehearsal-only helper for exercising the protosure-direct payout path without a real Mendix/
+  // Protosure call — this repo doesn't hold Protosure's actual private key, so it signs with the
+  // registered "rehearsal signer" (STUB_SIGNER_PRIVATE_KEY's address) instead. All signing
+  // material (key, target contract, expected attester, chain id) is read from server-side env at
+  // request time — the caller supplies nothing but an optional attestationId, so this can't be
+  // used to mint an attestation for an arbitrary amount/recipient/coverage code. Gated by the same
+  // requireRole('adult_child') + apiKeyAuth as every other /v1/jpyc/* route, since — unlike the
+  // rest of /v1/demo/* — this moves real (if dust-sized against RIDER_FALLBACK_ADDR) funds.
+  router.post('/v1/jpyc/rehearseTransfer', requireRole('adult_child'), asyncHandler(async (req, res) => {
+    const parsed = rehearseTransferSchema.safeParse(req.body || {});
+    if (!parsed.success) return res.status(400).json({ error: 'VALIDATION_ERROR', details: parsed.error.issues });
+    const { attestationId } = parsed.data;
+
+    let att;
+    if (attestationId) {
+      att = db.prepare('SELECT * FROM attestations WHERE id = ?').get(attestationId);
+      if (!att || att.status !== 'signed') {
+        return res.status(403).json({ error: 'ATTESTATION_REQUIRED' });
+      }
+    } else {
+      const stubKey = process.env.STUB_SIGNER_PRIVATE_KEY;
+      if (!stubKey) return res.status(503).json({ error: 'SIGNER_NOT_CONFIGURED' });
+      const attesterAddress = process.env.ATTESTER_ADDRESS || process.env.REGISTERED_SIGNER;
+      if (!attesterAddress) return res.status(503).json({ error: 'ATTESTER_ADDRESS_NOT_CONFIGURED' });
+      if (!process.env.PAYOUT_ADDR) return res.status(503).json({ error: 'CHAIN_NOT_CONFIGURED' });
+      const recipient = db.prepare("SELECT address FROM wallets WHERE name = 'sakura'").get()?.address;
+      if (!recipient) return res.status(503).json({ error: 'RECIPIENT_NOT_CONFIGURED' });
+      // Digest binds whatever contract actually verifies it on-chain (RIDER_FALLBACK_ADDR when
+      // configured), NOT PAYOUT_ADDR — a real ECDSA-recovery mismatch if these are conflated, see
+      // knowledge.md's rehearsal-script investigation.
+      const signingContractAddr = process.env.RIDER_FALLBACK_ADDR || process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
+      const chainIdEnv = process.env.CHAIN_ID || '43113';
+
+      const triggerRef = `REHEARSAL-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+      const quoteId = `REHEARSAL-QUOTE-${Date.now()}`;
+      const coverageCode = '0x01';
+      const triggerCode = 'PT-01';
+      const payoutAmount = 3000;
+      const monthKey = monthKeyTokyo(Date.now());
+
+      const inner = computeInner({
+        policyId: quoteId, triggerRef, coverageCode, payoutAmount, recipient, monthKey,
+        contractAddress: signingContractAddr, chainId: chainIdEnv,
+      });
+      const { payload_hash, signature } = signInner(inner, stubKey);
+
+      const id = randomUUID();
+      db.prepare(
+        `INSERT INTO attestations (id, policyId, triggerCode, payoutAmount, recipient, timestamp, triggerRef, coverageCode, monthKey, payloadHash, signature, signer, source, txHash, status, attesterNonce)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)`
+      ).run(
+        id, quoteId, triggerCode, payoutAmount, recipient, Date.now(), triggerRef, coverageCode, monthKey,
+        payload_hash, signature, attesterAddress, 'protosure-direct', 'signed', triggerRef
+      );
+      db.prepare(
+        `INSERT INTO cap_ledger (id, coverageCode, monthKey, amount, attestationId, status, ts) VALUES (?,?,?,?,?, 'reserved', ?)`
+      ).run(randomUUID(), coverageCode, monthKey, payoutAmount, id, Date.now());
+      appendEvent(db, {
+        parentId: null,
+        type: 'payout',
+        title: `Rehearsal attestation generated for ${triggerCode}`,
+        deepLink: `/v1/attestation/${id}`,
+        refId: id,
+      });
+
+      att = db.prepare('SELECT * FROM attestations WHERE id = ?').get(id);
     }
 
-    try {
-      const { txHash, explorerUrl } = await withTimeout(executePayoutOnChain(chain, att), 10000);
-      recordDemoTx();
-      db.prepare(`UPDATE attestations SET status = 'paid', txHash = ? WHERE id = ?`).run(txHash, att.id);
-      appendEvent(db, {
-        parentId: parentId || null,
-        type: 'payout',
-        title: `Payout sent: ¥${att.payoutAmount}`,
-        deepLink: explorerUrl,
-        refId: incidentId || att.id,
-      });
-      res.json({ status: 'paid', txHash, explorerUrl, signer: att.signer, source: att.source, payloadHash: att.payloadHash });
-    } catch (e) {
-      if (e.code === 'TIMEOUT') return res.json({ status: 'pending', attestationId: att.id });
-      if (e.code === 'ORACLE_SIGNER_NOT_CONFIGURED') return res.status(503).json({ error: e.code });
-      console.error('[chain] payout submission failed:', e.reason || e.shortMessage || e.message || e);
-      const mapped = mapChainError(e);
-      if (PERMANENT_FAILURE_REASONS.has(mapped.error)) releaseCapLedger(db, att.id);
-      res.status(mapped.status).json(mapped);
-    }
+    const result = await performTransfer(db, chain, att);
+    res.status(result.httpStatus).json({ attestationId: att.id, ...result.body });
   }));
 
   router.post('/v1/jpyc/batchTransfer', requireRole('adult_child'), asyncHandler(async (req, res) => {

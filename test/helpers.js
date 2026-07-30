@@ -20,6 +20,9 @@ process.env.CHAIN_ID = process.env.CHAIN_ID || '43113';
 // developer's local .env. Recovers to 0xA911EBe20Fb0909DCAD75821cbF7A9e57Ebaf9c9.
 process.env.ORACLE_SIGNER_PRIVATE_KEY = '8f5f86e882c0024e635799ec6d26beb5b44a0b5a8b842f6417ebf95c4cc42b21';
 process.env.RIDER_ADDR = process.env.RIDER_ADDR || '0x9A9f2CCfdE556A7E9Ff0848998Aa4a0CFD8863AE';
+// Seeded as the 'sakura' wallet's address (src/db.js#seed) — used as the default recipient by
+// POST /v1/jpyc/rehearseTransfer when no attestationId is given.
+process.env.SAKURA_WALLET_ADDR = process.env.SAKURA_WALLET_ADDR || '0x742d35Cc6634C0532925a3b8D4C9C0f25B4f2F9a';
 // Same rationale as ATTESTATION_MODE above: force stub activation regardless of a developer's
 // local ACTIVATION_MODE=protosure, so the offline suite never depends on live Protosure reachability.
 process.env.ACTIVATION_MODE = 'stub';

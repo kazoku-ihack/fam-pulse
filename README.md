@@ -34,6 +34,14 @@ depends on a live network call. Flip on real credentials in `.env` to light up:
 | `RIDER_ADDR` + `ORACLE_SIGNER_PRIVATE_KEY` | On-chain execution for attestations from the Mendix/Protosure-direct flow (`source:"protosure-direct"`, created via `POST /v1/jpyc/preTransferHash`) — `POST /v1/jpyc/transfer` targets this externally-deployed Rider contract instead of `PAYOUT_ADDR`, whose `submitTrigger` takes two independently-verified signatures (`oracleSig` + `attesterSig`, each over its own digest — not a shared one) rather than one. `ORACLE_SIGNER_PRIVATE_KEY` produces `oracleSig` fresh at transfer time. Unset → `503 CHAIN_NOT_CONFIGURED` (`RIDER_ADDR`) or `503 ORACLE_SIGNER_NOT_CONFIGURED` on transfer. Every other attestation source is unaffected and still targets `PAYOUT_ADDR`/`MimamorParametric` with a single signature. |
 | `ATTESTER_ADDRESS` (falls back to `REGISTERED_SIGNER`) | `POST /v1/jpyc/preTransferHash` requires `attester.signer` to equal this — protects against persisting (and later, on a Rider submit, wasting gas on) an attestation from an unexpected signer. `ATTESTER_ADDRESS` is checked first; `REGISTERED_SIGNER` is only a fallback. Unset (both) → `503 ATTESTER_ADDRESS_NOT_CONFIGURED`; mismatch → `422 ATTESTER_ADDRESS_MISMATCH`. |
 | `RIDER_FALLBACK_ADDR` | Workaround for the real Rider deployment rejecting Protosure's actual `attesterSig` (a confirmed digest mismatch — see `knowledge.md`). When set, `protosure-direct` transfers target this address instead of `RIDER_ADDR`, using the plain single-signature `submitTrigger` (an unmodified `MimamorParametric` instance, deployed via `chain/deploy-rider-fallback.js` wrapping the real `JPYC_ADDR` token) — no `oracleSig` needed for this path. Unset (default) → behavior unchanged, still targets the real Rider contract. |
+
+**Rehearsing a real payout without a Mendix/Protosure call.** `POST /v1/jpyc/rehearseTransfer`
+(`x-api-key` required, same as every other `/v1/jpyc/*` route) generates a fresh PT-01 attestation
+signed by the registered "rehearsal signer" (`STUB_SIGNER_PRIVATE_KEY`'s address) and pays it out
+immediately — every signing detail comes from server-side env, the only accepted input is an
+optional `attestationId` (to transfer an existing attestation instead of generating a new one).
+`src/chain/rehearse-protosure-direct.js` is an equivalent standalone script for driving the same
+flow from your own machine with your own env values, for repeated manual testing.
 | `SMTP_URL` / `IMAP_URL` | Real care-request email send / reply polling. Unset → logged only; use `SIM_CARE_REPLY=1` or the Judge Console's "Simulate care reply now" button to rehearse offline. |
 | `PROTOSURE_BASE_URL` + `PROTOSURE_API_TOKEN` | Real Protosure policy-verification when `ACTIVATION_MODE=protosure` (`POST /v1/activation/verify`). Unset/unreachable → `502 PROTOSURE_UNAVAILABLE`, fails closed (no household/device/activation row is ever written on an upstream failure). |
 
