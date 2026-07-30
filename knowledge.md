@@ -149,10 +149,45 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
     by Protosure, not this service, and is trusted verbatim (see above). Needs either (a) Protosure
     signing attestations against the same evidence-based digest formula confirmed working for
     `oracleSig`, or (b) the real Rider Solidity source, to confirm the actual digest scheme it
-    expects for `attesterSig` if it's genuinely different from the oracle one. As of this writing,
-    unresolved — treat any `protosure-direct` transfer as expected to fail with `SIGNER_MISMATCH`
-    ("bad attester sig") until this is reconciled with whoever owns Protosure's signing / Rider's
-    deployment.
+    expects for `attesterSig` if it's genuinely different from the oracle one.
+  - **Root cause CONFIRMED (2026-07-30), not just hypothesized**: added a temporary diagnostic log
+    to `preTransferHash` (`[preTransferHash] diagnostic`, since removed — see the
+    `RIDER_FALLBACK_ADDR` bullet below for why it's no longer needed), captured two real Mendix
+    calls, and recomputed `protosure/stub.js#computeInner`'s digest offline for each using the
+    logged fields. Call #2 (`trigger_ref:"TRG-004-20260730-22"`, `monthKey="202607"`) matched
+    `attester.payload_hash` **exactly, byte-for-byte**. Protosure is signing the classic
+    `MimamorParametric` digest (this repo's own `computeInner`), not whatever Rider reconstructs
+    on-chain — confirmed, not a guess. `RIDER_ADDR` and `PAYOUT_ADDR` were also confirmed to be the
+    *same* deployed address at the time of this test, so it isn't a contract-address-binding issue
+    either — it's a genuinely different field/digest structure. A read-only `staticCall` of the old
+    single-sig `submitTrigger`/`isRegisteredSigner` selectors directly against that address both
+    reverted with empty returndata (selector not found) — the deployed Rider contract is not a
+    superset/backward-compatible `MimamorParametric`, it's a genuinely different contract; there is
+    no way to reach the old code path at that address.
+  - **Workaround shipped (2026-07-30): `RIDER_FALLBACK_ADDR`** — a freshly-deployed, *unmodified*
+    `MimamorParametric.sol` (this repo's own contract, via the one-off
+    `src/chain/deploy-rider-fallback.js`, NOT the primary `deploy.js`), wrapping the **real,
+    externally-deployed `JPYC_ADDR` token** (`"Mock JPY Coin"`, confirmed **18 decimals** — NOT
+    this repo's 0-decimal `DemoJPYC`, a real mismatch if the two token families are ever mixed)
+    instead of minting a new one, funded directly from the relayer wallet's existing balance (it
+    already held ~937,000 tokens). `REGISTERED_SIGNER` (`0x2c75...`) is registered as an authorized
+    signer on this fallback contract — since that's exactly the digest/signer Protosure's real
+    output already matches, transfers against it succeed for real, are relayer-gas-paid, and are
+    visible on Snowtrace, without needing anything from Protosure or Rider's owner. Routing
+    (`isChainReadyFor`/`executePayoutOnChain` in `src/routes/payments.js`): if
+    `RIDER_FALLBACK_ADDR` is set, `protosure-direct` attestations go through
+    `chain.getRiderFallbackContract()` with the plain single-sig `submitTrigger` (same shape as the
+    non-`protosure-direct` path — no `oracleSig`, no `ORACLE_SIGNER_PRIVATE_KEY` needed for this
+    branch) instead of the dual-sig Rider path; unset (default), behavior is unchanged from before
+    this bullet. **Caveat**: `amountJpy` still moves unscaled (see the `amountWei` bullet below)
+    against an **18-decimal** token here — e.g. `payout_amount=30000` moves `30000` raw units =
+    `0.00000000000003` tokens, a real but dust-sized transfer. Fine for proving the pipeline
+    produces a genuine, mined, Snowtrace-visible transaction; not fine if a JPY-equivalent amount
+    ever needs to actually move — would need the fallback contract modified to scale by decimals
+    (careful: `amountJpy` is part of what `attesterSig`'s digest covers, so scaling must happen
+    only at the `jpyc.transfer()` call site, never touch the digest-input value). This is a
+    stopgap, not a fix for the real Rider integration — revert to the Rider path by unsetting
+    `RIDER_FALLBACK_ADDR` once Protosure/Rider's actual digest mismatch is reconciled upstream.
 - **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
   unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
   `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than

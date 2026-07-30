@@ -61,17 +61,42 @@ function signOracle(digest) {
 }
 
 function isChainReadyFor(chain, source) {
-  return source === 'protosure-direct' ? chain.isRiderDeployed() : chain.isChainDeployed();
+  if (source === 'protosure-direct') {
+    return chain.isRiderFallbackConfigured() || chain.isRiderDeployed();
+  }
+  return chain.isChainDeployed();
+}
+
+// Same single-signature submitTrigger shape used by the original MimamorParametric flow — reused
+// for RIDER_FALLBACK_ADDR since it's an unmodified MimamorParametric instance too, just wrapping
+// the real JPYC token instead of a locally-deployed one. See knowledge.md's "bad attester sig"
+// investigation for why this fallback exists.
+async function submitSingleSig(contract, chain, att) {
+  const tx = await contract.submitTrigger(
+    att.policyId,
+    att.triggerRef,
+    att.coverageCode,
+    BigInt(att.payoutAmount),
+    att.recipient,
+    BigInt(att.monthKey),
+    att.signature
+  );
+  const receipt = await tx.wait();
+  return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
 }
 
 // Values are echoed verbatim from the stored attestation — never recomputed — so what gets
 // submitted on-chain is exactly what was validated and signed at attestation time. Attestations
 // sourced from the Mendix/Protosure-direct flow (source:"protosure-direct") go to the Rider
 // contract instead of the original single-signature MimamorParametric — Rider's submitTrigger has
-// a different arg structure (oracleSig + attesterSig instead of one `signature`).
+// a different arg structure (oracleSig + attesterSig instead of one `signature`) — unless
+// RIDER_FALLBACK_ADDR is configured, in which case that takes priority (see isChainReadyFor).
 async function executePayoutOnChain(chain, att) {
   const wallet = chain.getRelayerWallet();
   if (att.source === 'protosure-direct') {
+    if (chain.isRiderFallbackConfigured()) {
+      return submitSingleSig(chain.getRiderFallbackContract(wallet), chain, att);
+    }
     const rider = chain.getRiderContract(wallet);
     const riderAddr = process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
     const chainId = process.env.CHAIN_ID || '43113';
@@ -108,18 +133,7 @@ async function executePayoutOnChain(chain, att) {
     const receipt = await tx.wait();
     return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
   }
-  const payout = chain.getPayoutContract(wallet);
-  const tx = await payout.submitTrigger(
-    att.policyId,
-    att.triggerRef,
-    att.coverageCode,
-    BigInt(att.payoutAmount),
-    att.recipient,
-    BigInt(att.monthKey),
-    att.signature
-  );
-  const receipt = await tx.wait();
-  return { txHash: receipt.hash, explorerUrl: chain.explorerUrl(receipt.hash) };
+  return submitSingleSig(chain.getPayoutContract(wallet), chain, att);
 }
 
 // Permanent (non-retryable) on-chain failures free the reserved headroom back up.
@@ -222,20 +236,6 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       quote_id, coverage_code, recipient, payout_amount, trigger_ref,
       incident_timestamp, contract_address, chain_id, attester, parentId,
     } = parsed.data;
-
-    // Temporary diagnostic for the live "bad attester sig" investigation (see knowledge.md) — the
-    // DB gets wiped on every deploy/AUTO_RESET_MINUTES, so the persisted attestation row alone
-    // isn't enough to reconstruct what Protosure actually signed after the fact. None of this is
-    // secret (signatures/hashes are meant to be publicly verifiable) — safe to log. Remove once the
-    // digest mismatch is root-caused and fixed.
-    console.log('[preTransferHash] diagnostic', JSON.stringify({
-      quote_id, trigger_ref, coverage_code, payout_amount, recipient,
-      contract_address, chain_id,
-      attester_signer: attester.signer,
-      attester_payload_hash: attester.payload_hash,
-      attester_signature: attester.signature,
-      attester_nonce: attester.nonce,
-    }));
 
     // coverage_code arrives as the on-chain hex byte (e.g. "0x01") — reverse-map to this repo's
     // triggerCode so the fixed-schedule/cool-down rules (keyed by triggerCode) can run.

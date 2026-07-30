@@ -134,6 +134,42 @@ test('preTransferHash: the resulting attestation executes on the Rider contract 
   assert.equal(recoveredOracle.toLowerCase(), ORACLE_SIGNER_ADDR.toLowerCase());
 });
 
+test('preTransferHash: when RIDER_FALLBACK_ADDR is configured, transfer targets the fallback (single-sig) contract instead of Rider, using attester.signature directly', async () => {
+  _resetDemoTxThrottle();
+  let fallbackCall = null;
+  const chain = makeFakeChain({
+    isRiderFallbackConfigured: () => true,
+    getRiderFallbackContract: () => ({
+      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, signature) => {
+        fallbackCall = { policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, signature };
+        return { wait: async () => ({ hash: '0x' + 'ef'.repeat(32) }) };
+      },
+    }),
+    getRiderContract: () => {
+      throw new Error('getRiderContract must not be called when the fallback is configured');
+    },
+    getPayoutContract: () => {
+      throw new Error('getPayoutContract must not be called for a protosure-direct attestation');
+    },
+  });
+  const { app } = setupApp({ payments: { chain } });
+
+  const pre = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody());
+  assert.equal(pre.status, 201);
+
+  const transfer = await request(app)
+    .post('/v1/jpyc/transfer')
+    .set('x-api-key', API_KEY)
+    .send({ attestationId: pre.body.id });
+  assert.equal(transfer.status, 200);
+  assert.equal(transfer.body.status, 'paid');
+
+  assert.ok(fallbackCall, 'fallback contract was never called');
+  assert.equal(fallbackCall.policyId, 'KP-2026-001');
+  assert.equal(fallbackCall.triggerRef, 'TRG-0001');
+  assert.equal(fallbackCall.signature, pre.body.attesterSig);
+});
+
 test('preTransferHash->transfer: 503s with ORACLE_SIGNER_NOT_CONFIGURED when ORACLE_SIGNER_PRIVATE_KEY is unset', async () => {
   _resetDemoTxThrottle();
   const savedKey = process.env.ORACLE_SIGNER_PRIVATE_KEY;

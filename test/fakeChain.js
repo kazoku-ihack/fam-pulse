@@ -8,6 +8,7 @@ export function makeFakeChain(overrides = {}) {
     isRelayerConfigured: () => true,
     isChainDeployed: () => true,
     isRiderDeployed: () => true,
+    isRiderFallbackConfigured: () => false,
     getRelayerWallet: () => ({ address: '0xFakeRelayerAddress00000000000000000001' }),
     getJpycContract: () => ({
       balanceOf: async () => 1_000_000n,
@@ -40,6 +41,21 @@ export function makeFakeChain(overrides = {}) {
         usedTriggerRefs.add(evidenceHash);
         return {
           wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }),
+        };
+      },
+    }),
+    // Same single-sig shape as getPayoutContract's mock — RIDER_FALLBACK_ADDR wraps an unmodified
+    // MimamorParametric instance, just a different address.
+    getRiderFallbackContract: () => ({
+      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, signature) => {
+        if (usedTriggerRefs.has(triggerRef)) {
+          const err = new Error('execution reverted: NONCE_ALREADY_USED');
+          err.reason = 'NONCE_ALREADY_USED';
+          throw err;
+        }
+        usedTriggerRefs.add(triggerRef);
+        return {
+          wait: async () => ({ hash: '0x' + 'ef'.repeat(32) }),
         };
       },
     }),

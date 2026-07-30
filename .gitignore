@@ -1,6 +1,7 @@
 node_modules/
 .env
 .env.chain
+.env.rider-fallback
 crypto-config
 *.sqlite
 *.sqlite-journal

@@ -71,6 +71,16 @@ export function isRiderDeployed() {
   return Boolean(process.env.FUJI_RPC && (process.env.RIDER_ADDR || process.env.PAYOUT_ADDR));
 }
 
+// RIDER_FALLBACK_ADDR — a workaround target for protosure-direct attestations, wrapping the real
+// JPYC token with this repo's own (unmodified) MimamorParametric.sol (PAYOUT_ABI, single
+// signature), because the externally-deployed Rider contract verifies attesterSig against a digest
+// Protosure doesn't actually sign — see knowledge.md's "bad attester sig" investigation. Takes
+// priority over the real RIDER_ADDR when set; unset by default, so this has no effect until
+// explicitly configured, and reverting to the real Rider integration is just unsetting the var.
+export function isRiderFallbackConfigured() {
+  return Boolean(process.env.FUJI_RPC && process.env.RIDER_FALLBACK_ADDR);
+}
+
 export function isRelayerConfigured() {
   return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY || process.env.RELAYER_PRIVATE_KEY);
 }
@@ -91,6 +101,13 @@ export function getRiderContract(runner) {
   return new ethers.Contract(riderAddr, RIDER_ABI, runner || getProvider());
 }
 
+// Same PAYOUT_ABI (single-signature submitTrigger) as getPayoutContract — just a different
+// address. See isRiderFallbackConfigured above for why this exists.
+export function getRiderFallbackContract(runner) {
+  if (!process.env.RIDER_FALLBACK_ADDR) throw new ChainNotConfiguredError('RIDER_FALLBACK_ADDR not set');
+  return new ethers.Contract(process.env.RIDER_FALLBACK_ADDR, PAYOUT_ABI, runner || getProvider());
+}
+
 export function explorerUrl(txHash) {
   return `https://testnet.snowtrace.io/tx/${txHash}`;
 }
@@ -100,9 +117,11 @@ export const chain = {
   getRelayerWallet,
   isChainDeployed,
   isRiderDeployed,
+  isRiderFallbackConfigured,
   isRelayerConfigured,
   getJpycContract,
   getPayoutContract,
   getRiderContract,
+  getRiderFallbackContract,
   explorerUrl,
 };
