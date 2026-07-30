@@ -63,6 +63,10 @@ services:
                     # PAYOUT_ADDR for source:"protosure-direct" attestations (dual-sig submitTrigger)
       - key: ORACLE_SIGNER_PRIVATE_KEY
         sync: false # signs Rider's oracleSig at transfer time — required only for the protosure-direct flow
+      - key: ATTESTER_ADDRESS
+        sync: false # Rider contract's expected attester — preTransferHash checks the given attesterSig
+                    # recovers to this address before persisting. Referred to first, ahead of
+                    # REGISTERED_SIGNER (which is a fallback only, for MimamorParametric's own signer).
       - key: REGISTERED_SIGNER
         sync: false # tied 1:1 to whichever contract PAYOUT_ADDR points at — see JPYC_ADDR/PAYOUT_ADDR above.
                     # Was a hardcoded non-secret value here until 2026-07-29, when it drifted from

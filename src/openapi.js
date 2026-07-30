@@ -794,9 +794,11 @@ export const openApiSpec = {
         tags: ['Payments'],
         summary:
           'Receive an attestation Mendix already got directly from Protosure and persist it as a signed ' +
-          'attestation ready for POST /v1/jpyc/transfer. Trusts the caller-supplied attester signature/hash and ' +
-          'does not re-run local payout rules (fixed schedule / PT-01 cool-down / cap headroom) — Mendix/Protosure ' +
-          'are responsible for validating those upstream. Does not execute on-chain itself.',
+          'attestation ready for POST /v1/jpyc/transfer. Does not re-run local payout rules (fixed schedule / ' +
+          'PT-01 cool-down / cap headroom) — Mendix/Protosure are responsible for validating those upstream. ' +
+          'Does independently recover the attester signer from payload_hash/signature and require it to match ' +
+          'ATTESTER_ADDRESS (or REGISTERED_SIGNER as a fallback), since submitting anything else to the Rider ' +
+          'contract would just revert on-chain later. Does not execute on-chain itself.',
         requestBody: {
           required: true,
           ...jsonBody({
@@ -817,9 +819,9 @@ export const openApiSpec = {
                 required: ['nonce', 'signer', 'signature', 'payload_hash'],
                 properties: {
                   nonce: { type: 'string', description: "Protosure's own signing nonce — stored, but not the on-chain dedup key (trigger_ref is)" },
-                  signer: { type: 'string', description: 'stored as-is and echoed back as `attester` — not re-verified against REGISTERED_SIGNER' },
-                  signature: { type: 'string', description: 'stored as-is, not independently re-verified' },
-                  payload_hash: { type: 'string', description: 'stored as-is and echoed back as `evidenceHash`, not recomputed/checked' },
+                  signer: { type: 'string', description: 'the claimed signer — not trusted; the persisted/echoed `attester` is the address independently recovered from payload_hash/signature instead' },
+                  signature: { type: 'string', description: 'checked via ECDSA recovery against payload_hash — the recovered address must equal ATTESTER_ADDRESS (or REGISTERED_SIGNER as a fallback)' },
+                  payload_hash: { type: 'string', description: 'stored as-is and echoed back as `evidenceHash`, not recomputed — but used as the digest for the ATTESTER_ADDRESS recovery check' },
                 },
               },
             },
@@ -837,7 +839,7 @@ export const openApiSpec = {
               quoteId: { type: 'string' },
               nonce: { type: 'string' },
               oracle: { type: 'string', nullable: true, description: 'this service\'s own signer identity — informational only, no second signature is produced' },
-              attester: { type: 'string' },
+              attester: { type: 'string', description: 'the address independently recovered from attester.payload_hash/signature — not the caller-claimed attester.signer field' },
               oracleSig: { type: 'string', nullable: true, description: 'always null — see `oracle` above' },
               attesterSig: { type: 'string' },
               evidenceHash: { type: 'string' },
@@ -845,8 +847,8 @@ export const openApiSpec = {
             },
           }),
           400: errRes('VALIDATION_ERROR or UNKNOWN_COVERAGE_CODE'),
-          422: errRes('CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH'),
-          503: errRes('CHAIN_NOT_CONFIGURED (PAYOUT_ADDR unset)'),
+          422: errRes('CONTRACT_ADDRESS_MISMATCH / CHAIN_ID_MISMATCH / INVALID_SIGNATURE / ATTESTER_ADDRESS_MISMATCH'),
+          503: errRes('CHAIN_NOT_CONFIGURED (PAYOUT_ADDR unset) / ATTESTER_ADDRESS_NOT_CONFIGURED (neither ATTESTER_ADDRESS nor REGISTERED_SIGNER set)'),
         },
       },
     },

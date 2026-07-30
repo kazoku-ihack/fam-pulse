@@ -163,18 +163,77 @@ test('preTransferHash: rejects an unknown coverage_code', async () => {
   assert.equal(res.body.error, 'UNKNOWN_COVERAGE_CODE');
 });
 
-test('preTransferHash: does not re-verify the attester signature or re-run local payout rules — Mendix/Protosure values are trusted as-is', async () => {
+test('preTransferHash: does not re-run local payout rules — an amount that would fail FIXED_SCHEDULE still persists, since that validation now happens once, upstream, against Protosure', async () => {
   const { app } = setupApp();
-  // Deliberately-wrong signature, signer, and an amount that would have failed FIXED_SCHEDULE —
-  // none of it is re-checked here; that validation now happens once, upstream, against Protosure.
   const body = baseBody({ payoutAmount: 3001 });
-  body.attester.signature = '0x' + 'aa'.repeat(65);
-  body.attester.signer = '0x' + '99'.repeat(20);
-  body.attester.payload_hash = '0x' + '11'.repeat(32);
   const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
   assert.equal(res.status, 201);
-  assert.equal(res.body.evidenceHash, body.attester.payload_hash);
-  assert.equal(res.body.attester.toLowerCase(), body.attester.signer.toLowerCase());
+  assert.equal(res.body.payoutAmount, 3001);
+});
+
+test('preTransferHash: rejects a payload_hash/signature pair that fails ECDSA recovery outright', async () => {
+  const { app } = setupApp();
+  const body = baseBody();
+  body.attester.signature = '0x' + 'aa'.repeat(65);
+  body.attester.payload_hash = '0x' + '11'.repeat(32);
+  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error, 'INVALID_SIGNATURE');
+});
+
+test('preTransferHash: rejects when the recovered attester does not match ATTESTER_ADDRESS/REGISTERED_SIGNER, regardless of the claimed attester.signer field', async () => {
+  const { app } = setupApp();
+  const body = baseBody();
+  // A validly-formed signature/payload_hash pair from an unrelated key — the claimed
+  // attester.signer field is a lie (set to the real GOLDEN_SIGNER) to prove the check recovers
+  // the actual signer cryptographically rather than trusting the claimed field.
+  const { payload_hash, signature } = signAs('bb'.repeat(32), {
+    quoteId: 'KP-2026-001', triggerRef: 'TRG-0001', coverageCode: '0x01', payoutAmount: 3000,
+    recipient: RECIPIENT, monthKey: '202608', contractAddress: PAYOUT_ADDR, chainId: CHAIN_ID,
+  });
+  body.attester = { nonce: 'PSN-0001', signer: GOLDEN_SIGNER, signature, payload_hash };
+  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error, 'ATTESTER_ADDRESS_MISMATCH');
+  assert.notEqual(res.body.received.toLowerCase(), GOLDEN_SIGNER);
+});
+
+test('preTransferHash: 503s with ATTESTER_ADDRESS_NOT_CONFIGURED when neither ATTESTER_ADDRESS nor REGISTERED_SIGNER is set', async () => {
+  // Save/restore via delete, not reassignment — `process.env.X = undefined` coerces to the
+  // string "undefined" (env vars are always strings), which would leave ATTESTER_ADDRESS
+  // truthy-but-wrong for every later test in this file instead of actually unset.
+  const savedAttester = process.env.ATTESTER_ADDRESS;
+  const savedRegistered = process.env.REGISTERED_SIGNER;
+  delete process.env.ATTESTER_ADDRESS;
+  delete process.env.REGISTERED_SIGNER;
+  try {
+    const { app } = setupApp();
+    const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody());
+    assert.equal(res.status, 503);
+    assert.equal(res.body.error, 'ATTESTER_ADDRESS_NOT_CONFIGURED');
+  } finally {
+    if (savedAttester === undefined) delete process.env.ATTESTER_ADDRESS;
+    else process.env.ATTESTER_ADDRESS = savedAttester;
+    if (savedRegistered === undefined) delete process.env.REGISTERED_SIGNER;
+    else process.env.REGISTERED_SIGNER = savedRegistered;
+  }
+});
+
+test('preTransferHash: ATTESTER_ADDRESS is referred to first, ahead of REGISTERED_SIGNER', async () => {
+  const savedAttester = process.env.ATTESTER_ADDRESS;
+  // REGISTERED_SIGNER (forced golden value) would accept this attestation; ATTESTER_ADDRESS set
+  // to something else must take priority and reject it.
+  process.env.ATTESTER_ADDRESS = '0x' + '77'.repeat(20);
+  try {
+    const { app } = setupApp();
+    const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(baseBody());
+    assert.equal(res.status, 422);
+    assert.equal(res.body.error, 'ATTESTER_ADDRESS_MISMATCH');
+    assert.equal(res.body.expected.toLowerCase(), process.env.ATTESTER_ADDRESS.toLowerCase());
+  } finally {
+    if (savedAttester === undefined) delete process.env.ATTESTER_ADDRESS;
+    else process.env.ATTESTER_ADDRESS = savedAttester;
+  }
 });
 
 test('preTransferHash: rejects a contract_address that does not match PAYOUT_ADDR', async () => {

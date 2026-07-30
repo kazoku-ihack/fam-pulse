@@ -56,14 +56,29 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   from this endpoint at the requester's explicit direction** — Mendix now validates against
   Protosure separately, upstream, and `preTransferHash`/`transfer` are called sequentially trusting
   that upstream result. This reverses the 2026-07-29 design decision below it used to make
-  (`validateRules()` no longer runs here; `attester.signature`/`payload_hash`/`signer` are stored
-  and echoed back as given, not recomputed/recovered/checked against `REGISTERED_SIGNER`). The
-  `contract_address`/`chain_id` cross-checks against `PAYOUT_ADDR`/`CHAIN_ID` were deliberately kept
-  (out of scope of that direction — they're deployment sanity checks, not attestation validation).
-  `validateRules()` and independent signature verification are still very much in force on
-  `POST /v1/attestation/trigger` and the live-rater path (`rater-client.js`) — this change is
-  scoped to the Mendix-direct endpoint only; don't assume it generalizes elsewhere in the payout
+  (`validateRules()` no longer runs here). The `contract_address`/`chain_id` cross-checks against
+  `PAYOUT_ADDR`/`CHAIN_ID` were deliberately kept (out of scope of that direction — they're
+  deployment sanity checks, not attestation validation). `validateRules()` is still very much in
+  force on `POST /v1/attestation/trigger` and the live-rater path (`rater-client.js`) — this change
+  is scoped to the Mendix-direct endpoint only; don't assume it generalizes elsewhere in the payout
   path without checking.
+- **Scope change (2026-07-30, later same day): signature verification was partially reinstated** —
+  `attester.signature`/`payload_hash` are no longer trusted blind. `preTransferHash` now recovers
+  the actual signer via `ethers.recoverAddress(attester.payload_hash, attester.signature)` (works
+  regardless of what digest scheme produced `payload_hash` — recovery only needs the final signed
+  digest + signature, not knowledge of the preimage) and requires it to equal `expectedSigner =
+  ATTESTER_ADDRESS || REGISTERED_SIGNER` — **`ATTESTER_ADDRESS` is referred to first**, confirmed
+  explicitly by the request author; `REGISTERED_SIGNER` is a fallback only, for deployments that
+  haven't set `ATTESTER_ADDRESS` yet (they're the same value, `0x2c75...`, in this deployment
+  today, but conceptually distinct — `ATTESTER_ADDRESS` is the Rider contract's own expected
+  attester, `REGISTERED_SIGNER` is `MimamorParametric`'s registered signer). The caller-claimed
+  `attester.signer` field is never trusted or compared against anything — the persisted
+  `attestations.signer` column and the response's `attester` field are now the *recovered* address,
+  not the claimed one. Missing both env vars fails safe: `503 ATTESTER_ADDRESS_NOT_CONFIGURED`. A
+  mismatch or an unrecoverable signature is `422 ATTESTER_ADDRESS_MISMATCH` / `422
+  INVALID_SIGNATURE`. `validateRules()` (fixed schedule / cool-down / cap) is still **not**
+  re-run — this reinstated check is signature-only, not a full return to the pre-2026-07-30 (early)
+  behavior.
 - **`coverage_code` arrives as the on-chain hex byte** (e.g. `"0x01"`), not the human `triggerCode`
   (`"PT-01"`) — reverse-mapped via `COVERAGE_CODE` since every local rule is keyed by
   `triggerCode`. An unrecognized byte is `400 UNKNOWN_COVERAGE_CODE`, not a 422 rule failure.

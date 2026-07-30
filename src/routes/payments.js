@@ -156,12 +156,14 @@ const transferSchema = z.object({
 });
 
 // Mendix now calls Protosure directly for the attestation itself — this service no longer signs
-// via protosure/rater-client.js for this flow, and no longer independently re-verifies Protosure's
-// signature or re-runs the local fixed-schedule/cool-down/cap rules against it: the caller
-// (Mendix, via preTransferHash then transfer, called sequentially) is trusted to supply an
-// already-validated attestation. preTransferHash's job is just to persist an `attestations` row
-// exactly like POST /v1/attestation/trigger does, so POST /v1/jpyc/transfer can execute it
-// unchanged.
+// via protosure/rater-client.js for this flow, and no longer re-runs the local fixed-schedule/
+// cool-down/cap rules against it: the caller (Mendix, via preTransferHash then transfer, called
+// sequentially) is trusted to supply an already-validated attestation. The one thing this endpoint
+// does still check is that the given attester.payload_hash/signature actually recovers to the
+// Rider contract's expected attester (ATTESTER_ADDRESS) — see the expectedSigner check below —
+// since submitting anything else would just revert on-chain later, wasting gas. Beyond that,
+// preTransferHash's job is to persist an `attestations` row exactly like POST /v1/attestation/
+// trigger does, so POST /v1/jpyc/transfer can execute it unchanged.
 const preTransferHashSchema = z.object({
   quote_id: z.string().min(1),
   coverage_code: z.string().min(1),
@@ -245,6 +247,32 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
         received: String(chain_id), 
       });
     }
+    // ATTESTER_ADDRESS is referred to first — it's the Rider contract's own expected attester,
+    // which may diverge from REGISTERED_SIGNER (MimamorParametric's registered signer) even though
+    // both happen to be the same address in this deployment today. REGISTERED_SIGNER is only a
+    // fallback for deployments that haven't set ATTESTER_ADDRESS yet.
+    const expectedSigner = String(process.env.ATTESTER_ADDRESS || process.env.REGISTERED_SIGNER || '').toLowerCase();
+    if (!expectedSigner) {
+      return res.status(503).json({ error: 'ATTESTER_ADDRESS_NOT_CONFIGURED' });
+    }
+    // Recovered directly from the given payload_hash/signature — not the caller-claimed
+    // attester.signer field, which would make this check meaningless (anyone can claim any
+    // signer). This doesn't require knowing Protosure's digest construction: ECDSA recovery only
+    // needs the final signed digest and the signature over it, both supplied by the caller.
+    let recoveredAttester;
+    try {
+      recoveredAttester = ethers.recoverAddress(attester.payload_hash, attester.signature);
+    } catch (e) {
+      return res.status(422).json({ error: 'INVALID_SIGNATURE', message: e.message });
+    }
+    if (recoveredAttester.toLowerCase() !== expectedSigner) {
+      return res.status(422).json({
+        error: 'ATTESTER_ADDRESS_MISMATCH',
+        expected: process.env.ATTESTER_ADDRESS || process.env.REGISTERED_SIGNER,
+        received: recoveredAttester,
+      });
+    }
+
     const normalizedIncidentTimestamp = normalizeIncidentTimestamp(incident_timestamp);
     const monthKey = monthKeyTokyo(normalizedIncidentTimestamp);
     const digest = attester.payload_hash;
@@ -265,7 +293,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       monthKey,
       digest,
       attester.signature,
-      attester.signer,
+      recoveredAttester,
       'protosure-direct',
       'signed',
       attester.nonce
@@ -297,7 +325,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       // own configured signer identity for audit purposes; the attester's (Protosure's) signature
       // is the only one that actually authorizes the on-chain transfer via submitTrigger.
       oracle: process.env.REGISTERED_SIGNER || null,
-      attester: attester.signer,
+      attester: recoveredAttester,
       oracleSig: null,
       attesterSig: attester.signature,
       evidenceHash: digest,
