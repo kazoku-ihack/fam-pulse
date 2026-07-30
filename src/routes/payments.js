@@ -223,6 +223,20 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       incident_timestamp, contract_address, chain_id, attester, parentId,
     } = parsed.data;
 
+    // Temporary diagnostic for the live "bad attester sig" investigation (see knowledge.md) — the
+    // DB gets wiped on every deploy/AUTO_RESET_MINUTES, so the persisted attestation row alone
+    // isn't enough to reconstruct what Protosure actually signed after the fact. None of this is
+    // secret (signatures/hashes are meant to be publicly verifiable) — safe to log. Remove once the
+    // digest mismatch is root-caused and fixed.
+    console.log('[preTransferHash] diagnostic', JSON.stringify({
+      quote_id, trigger_ref, coverage_code, payout_amount, recipient,
+      contract_address, chain_id,
+      attester_signer: attester.signer,
+      attester_payload_hash: attester.payload_hash,
+      attester_signature: attester.signature,
+      attester_nonce: attester.nonce,
+    }));
+
     // coverage_code arrives as the on-chain hex byte (e.g. "0x01") — reverse-map to this repo's
     // triggerCode so the fixed-schedule/cool-down rules (keyed by triggerCode) can run.
     const triggerCode = Object.entries(COVERAGE_CODE).find(
