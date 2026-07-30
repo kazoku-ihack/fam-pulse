@@ -133,8 +133,17 @@ function mapChainError(e) {
   const msg = String(e.reason || e.shortMessage || e.message || '');
   if (msg.includes('already processed')) return { status: 409, error: 'ALREADY_PROCESSED' };
   if (msg.includes('cooldown active')) return { status: 429, error: 'COOLDOWN_ACTIVE' };
-  if (msg.includes('bad oracle sig') || msg.includes('bad attester sig') || msg.includes('signers must differ') || msg.includes('bad sig')) { 
-    return { status: 502, error: 'SIGNER_MISMATCH', message : 'Signature does not match rider oracle/attester registration' };
+  if (msg.includes('bad oracle sig')) { 
+    return { status: 502, error: 'SIGNER_MISMATCH', message : 'bad oracle sig - Signature does not match rider oracle/attester registration' };
+  }
+  if (msg.includes('bad attester sig')) { 
+    return { status: 502, error: 'SIGNER_MISMATCH', message : 'bad attester sig - Signature does not match rider oracle/attester registration' };
+  }
+  if (msg.includes('signers must differ')) { 
+    return { status: 502, error: 'SIGNER_MISMATCH', message : 'signers must differ - Signature does not match rider oracle/attester registration' };
+  }
+  if (msg.includes('bad sig')) { 
+    return { status: 502, error: 'SIGNER_MISMATCH', message : 'bad sig - Signature does not match rider oracle/attester registration' };
   }
   if (msg.includes('insurer balance too low') || msg.includes('insurer allowance too low') || msg.includes('payout transfer failer')) { 
     return { status: 502, error: 'INSUFFICIENT_FUNDS', message : 'relayer must hold JPYC and approve rider contract' };
