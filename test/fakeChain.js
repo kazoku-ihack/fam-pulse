@@ -27,16 +27,17 @@ export function makeFakeChain(overrides = {}) {
       },
       isRegisteredSigner: async () => true,
     }),
-    // Rider's submitTrigger takes both oracleSig and attesterSig — same replay-guard shape as
-    // getPayoutContract's mock above, just with the extra arg.
+    // Rider's submitTrigger verifies both oracleSig and attesterSig over the evidenceHash-based
+    // digest — same replay-guard shape as getPayoutContract's mock above, keyed by evidenceHash
+    // (derived from triggerRef) instead of triggerRef directly.
     getRiderContract: () => ({
-      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig) => {
-        if (usedTriggerRefs.has(triggerRef)) {
+      submitTrigger: async (evidenceHash, beneficiary, incidentTimestamp, amount, oracleSig, attesterSig) => {
+        if (usedTriggerRefs.has(evidenceHash)) {
           const err = new Error('execution reverted: NONCE_ALREADY_USED');
           err.reason = 'NONCE_ALREADY_USED';
           throw err;
         }
-        usedTriggerRefs.add(triggerRef);
+        usedTriggerRefs.add(evidenceHash);
         return {
           wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }),
         };

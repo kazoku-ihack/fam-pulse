@@ -36,10 +36,10 @@ const PAYOUT_ABI = [
 
 // The externally-deployed Rider contract used only for attestations sourced from the
 // Mendix/Protosure-direct flow (source:"protosure-direct") — its submitTrigger takes two
-// signatures (oracleSig + attesterSig) over the same digest, rather than PAYOUT_ABI's single
-// `signature`. See routes/payments.js#executeRiderPayout.
+// independently-verified signatures (oracleSig + attesterSig, each over its own digest), rather
+// than PAYOUT_ABI's single `signature`. See routes/payments.js#executePayoutOnChain.
 const RIDER_ABI = [
-  'function submitTrigger(string policyIdStr, string triggerRefStr, bytes1 coverageCode, uint256 amountJpy, address recipient, uint256 monthKey, bytes oracleSig, bytes attesterSig)',
+  'function submitTrigger(bytes32 evidenceHash, address beneficiary, uint256 incidentTimestamp, uint256 amount, bytes oracleSig, bytes attesterSig)',
 ];
 
 let cachedProvider = null;
@@ -68,11 +68,11 @@ export function isChainDeployed() {
 }
 
 export function isRiderDeployed() {
-  return Boolean(process.env.FUJI_RPC && process.env.RIDER_ADDR);
+  return Boolean(process.env.FUJI_RPC && (process.env.RIDER_ADDR || process.env.PAYOUT_ADDR));
 }
 
 export function isRelayerConfigured() {
-  return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY);
+  return Boolean(process.env.STUB_SIGNER_PRIVATE_KEY || process.env.RELAYER_PRIVATE_KEY);
 }
 
 export function getJpycContract(runner) {
@@ -86,8 +86,9 @@ export function getPayoutContract(runner) {
 }
 
 export function getRiderContract(runner) {
-  if (!process.env.RIDER_ADDR) throw new ChainNotConfiguredError('RIDER_ADDR not set');
-  return new ethers.Contract(process.env.RIDER_ADDR, RIDER_ABI, runner || getProvider());
+  const riderAddr = process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
+  if (!riderAddr) throw new ChainNotConfiguredError('RIDER_ADDR (or PAYOUT_ADDR) not set');
+  return new ethers.Contract(riderAddr, RIDER_ABI, runner || getProvider());
 }
 
 export function explorerUrl(txHash) {

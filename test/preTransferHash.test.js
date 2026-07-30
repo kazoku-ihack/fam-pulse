@@ -93,8 +93,8 @@ test('preTransferHash: the resulting attestation executes on the Rider contract 
   let riderCall = null;
   const chain = makeFakeChain({
     getRiderContract: () => ({
-      submitTrigger: async (policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig) => {
-        riderCall = { policyId, triggerRef, coverageCode, amountJpy, recipient, monthKey, oracleSig, attesterSig };
+      submitTrigger: async (evidenceHash, beneficiary, incidentTimestamp, amount, oracleSig, attesterSig) => {
+        riderCall = { evidenceHash, beneficiary, incidentTimestamp, amount, oracleSig, attesterSig };
         return { wait: async () => ({ hash: '0x' + 'cd'.repeat(32) }) };
       },
     }),
@@ -117,7 +117,20 @@ test('preTransferHash: the resulting attestation executes on the Rider contract 
 
   assert.ok(riderCall, 'Rider contract was never called');
   assert.equal(riderCall.attesterSig, pre.body.attesterSig);
-  const recoveredOracle = ethers.recoverAddress(pre.body.evidenceHash, riderCall.oracleSig);
+
+  // Oracle co-signs a digest derived from (riderAddr, chainId, evidenceHash, recipient,
+  // incidentTimestamp, amount) — see executePayoutOnChain in src/routes/payments.js — distinct
+  // from pre.body.evidenceHash (the attester's own payload_hash, trusted verbatim, not recomputed).
+  const riderAddr = process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
+  const expectedEvidenceHash = ethers.keccak256(ethers.toUtf8Bytes('TRG-0001'));
+  const inner = ethers.keccak256(
+    ethers.AbiCoder.defaultAbiCoder().encode(
+      ['address', 'uint256', 'bytes32', 'address', 'uint256', 'uint256'],
+      [riderAddr, BigInt(CHAIN_ID), expectedEvidenceHash, ethers.getAddress(RECIPIENT.toLowerCase()), Math.floor(AUGUST_2026_TOKYO / 1000), 3000n]
+    )
+  );
+  const expectedOracleDigest = ethers.hashMessage(ethers.getBytes(inner));
+  const recoveredOracle = ethers.recoverAddress(expectedOracleDigest, riderCall.oracleSig);
   assert.equal(recoveredOracle.toLowerCase(), ORACLE_SIGNER_ADDR.toLowerCase());
 });
 

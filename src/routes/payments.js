@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { randomUUID } from 'node:crypto';
+import { ethers } from 'ethers';
 import { z } from 'zod';
 import { appendEvent, getParentId } from '../db.js';
 import { requireRole } from '../auth.js';
@@ -48,12 +49,13 @@ export class OracleSignerNotConfiguredError extends Error {
   }
 }
 
-// The externally-deployed Rider contract's submitTrigger verifies two independent signatures over
-// the same digest — attesterSig (Protosure's, already stored on the attestation) and oracleSig,
-// which this service produces itself at transfer time from ORACLE_SIGNER_PRIVATE_KEY. Co-signing
-// the identical digest, not a fresh one, per the confirmed Rider contract behavior.
+// The externally-deployed Rider contract's submitTrigger verifies two independently-computed
+// signatures — attesterSig (Protosure's, already stored on the attestation, trusted verbatim and
+// never re-derived) and oracleSig, which this service produces itself at transfer time from
+// ORACLE_SIGNER_PRIVATE_KEY over its own evidence-based digest (see executePayoutOnChain). The two
+// signatures are NOT expected to cover the same digest — see knowledge.md's 2026-07-30 update.
 function signOracle(digest) {
-  const key = process.env.ORACLE_SIGNER_PRIVATE_KEY;
+  const key = process.env.ORACLE_SIGNER_PRIVATE_KEY || process.env.ORACLE_PRIVATE_KEY;
   if (!key) throw new OracleSignerNotConfiguredError('ORACLE_SIGNER_PRIVATE_KEY not set');
   return signDigest(digest, key).signature;
 }
@@ -71,14 +73,35 @@ async function executePayoutOnChain(chain, att) {
   const wallet = chain.getRelayerWallet();
   if (att.source === 'protosure-direct') {
     const rider = chain.getRiderContract(wallet);
-    const oracleSig = signOracle(att.payloadHash);
+    const riderAddr = process.env.RIDER_ADDR || process.env.PAYOUT_ADDR;
+    const chainId = process.env.CHAIN_ID || '43113';
+    const evidenceHash = ethers.keccak256(ethers.toUtf8Bytes(String(att.triggerRef)));
+    const incidents = Math.floor(Number(att.timestamp) / 1000);
+    // amount stays unscaled (raw payoutAmount), matching every other path in this file — see
+    // knowledge.md.
+    const amount = BigInt(att.payoutAmount);
+    const inner = ethers.keccak256(
+      ethers.AbiCoder.defaultAbiCoder().encode(
+        ['address', 'uint256', 'bytes32', 'address', 'uint256', 'uint256'],
+        [
+          ethers.getAddress(String(riderAddr).toLowerCase()),
+          BigInt(chainId),
+          evidenceHash,
+          ethers.getAddress(String(att.recipient).toLowerCase()),
+          BigInt(incidents),
+          amount,
+        ]
+      )
+    );
+    const payloadHash = ethers.hashMessage(ethers.getBytes(inner));
+    const oracleSig = signOracle(payloadHash);
+    // attesterSig (att.signature) is Protosure's own signature, trusted verbatim — it is not
+    // expected to verify against this oracle digest; Rider checks the two independently.
     const tx = await rider.submitTrigger(
-      att.policyId,
-      att.triggerRef,
-      att.coverageCode,
-      BigInt(att.payoutAmount),
+      evidenceHash,
       att.recipient,
-      BigInt(att.monthKey),
+      BigInt(incidents),
+      amount,
       oracleSig,
       att.signature
     );
@@ -108,6 +131,14 @@ function releaseCapLedger(db, attestationId) {
 
 function mapChainError(e) {
   const msg = String(e.reason || e.shortMessage || e.message || '');
+  if (msg.includes('already processed')) return { status: 409, error: 'ALREADY_PROCESSED' };
+  if (msg.includes('cooldown active')) return { status: 429, error: 'COOLDOWN_ACTIVE' };
+  if (msg.includes('bad oracle sig') || msg.includes('bad attester sig') || msg.includes('signers must differ') || msg.includes('bad sig')) { 
+    return { status: 502, error: 'SIGNER_MISMATCH', message : 'Signature does not match rider oracle/attester registration' };
+  }
+  if (msg.includes('insurer balance too low') || msg.includes('insurer allowance too low') || msg.includes('payout transfer failer')) { 
+    return { status: 502, error: 'INSUFFICIENT_FUNDS', message : 'relayer must hold JPYC and approve rider contract' };
+  }
   if (msg.includes('NONCE_ALREADY_USED')) return { status: 409, error: 'NONCE_ALREADY_USED' };
   if (msg.includes('SIGNER_MISMATCH')) {
     return { status: 502, error: 'SIGNER_MISMATCH', message: 'signer not registered on contract — run setSigner' };

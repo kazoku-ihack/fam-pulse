@@ -89,19 +89,27 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
     (`stub`/`protosure`/`stub-fallback`, from `POST /v1/attestation/trigger`) → unchanged
     `chain.getPayoutContract()` at `PAYOUT_ADDR`.
   - `attesterSig` is exactly `attestations.signature` (Protosure's, stored verbatim at
-    `preTransferHash` time, never regenerated).
-  - `oracleSig` is generated **fresh at transfer time**, not stored anywhere — this service signs
-    `attestations.payloadHash` (the exact same digest `attesterSig` covers) with
-    `ORACLE_SIGNER_PRIVATE_KEY`, via `signDigest()` (`src/protosure/stub.js`, factored out of
-    `signInner` for this reuse). Confirmed by the request author: oracle co-signs the *identical*
-    digest, not a derived/different one.
+    `preTransferHash` time, never regenerated) — **it is trusted as-is and never re-verified or
+    re-derived by this service.** `src/protosure/stub.js`'s `computeInner`/`signInner` are not part
+    of this path at all (they remain in use only for the older `MimamorParametric` flow via
+    `POST /v1/attestation/trigger`) — don't assume attesterSig verifies against anything this repo
+    computes.
+  - **Update (2026-07-30, supersedes the "identical digest" note below): `oracleSig` and
+    `attesterSig` are two independently-computed digests, not a shared one** — confirmed by the
+    request author. `oracleSig` is generated **fresh at transfer time** in
+    `executePayoutOnChain` (`src/routes/payments.js`) over a digest built specifically for it:
+    `evidenceHash = keccak256(triggerRef)`, then
+    `inner = keccak256(AbiCoder.encode(['address','uint256','bytes32','address','uint256','uint256'], [riderAddr, chainId, evidenceHash, recipient, incidentTimestamp, amount]))`
+    (`riderAddr` = `RIDER_ADDR || PAYOUT_ADDR`), then EIP-191-wrapped via `ethers.hashMessage` and
+    signed with `ORACLE_SIGNER_PRIVATE_KEY` via `signDigest()`. `amount` is **unscaled**
+    (`BigInt(payoutAmount)`, no decimals) — see the `amountWei` bullet below, same rule applies
+    here. Rider's `submitTrigger` is expected to verify the two signatures independently, not
+    against one shared digest.
   - `contract_address` in the `preTransferHash` request body is still checked against `PAYOUT_ADDR`,
     **not** `RIDER_ADDR` — confirmed by the request author, even though the actual on-chain call at
-    transfer time targets Rider. Not yet explained why the digest Protosure signs would bind to
-    `PAYOUT_ADDR` if Rider is the contract that ultimately verifies it (Rider's own
-    `address(this)`-equivalent binding, if any, is unknown — its source isn't in this repo). Revisit
-    if `CONTRACT_ADDRESS_MISMATCH`/signature-recovery problems show up against the real Rider
-    deployment.
+    transfer time targets Rider (and the oracle digest above binds to `RIDER_ADDR`/`PAYOUT_ADDR`
+    fallback, separately). These are deliberately two different checks on two different digests now
+    — not a gap to reconcile.
   - Missing `ORACLE_SIGNER_PRIVATE_KEY` fails safe: `503 ORACLE_SIGNER_NOT_CONFIGURED` from
     `/v1/jpyc/transfer`, same fail-safe pattern as `CHAIN_NOT_CONFIGURED` elsewhere — see
     `OracleSignerNotConfiguredError` in `src/routes/payments.js`.
