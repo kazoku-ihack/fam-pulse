@@ -171,31 +171,32 @@ test('preTransferHash: does not re-run local payout rules — an amount that wou
   assert.equal(res.body.payoutAmount, 3001);
 });
 
-test('preTransferHash: rejects a payload_hash/signature pair that fails ECDSA recovery outright', async () => {
+test('preTransferHash: rejects when attester.signer does not match ATTESTER_ADDRESS/REGISTERED_SIGNER, even with an otherwise well-formed signature/payload_hash', async () => {
+  const { app } = setupApp();
+  const body = baseBody();
+  // attester.signer is checked directly (as sent by Protosure), not derived via ECDSA recovery —
+  // a well-formed signature/payload_hash pair from an unrelated key doesn't matter here, only the
+  // claimed signer field does.
+  const { payload_hash, signature } = signAs('bb'.repeat(32), {
+    quoteId: 'KP-2026-001', triggerRef: 'TRG-0001', coverageCode: '0x01', payoutAmount: 3000,
+    recipient: RECIPIENT, monthKey: '202608', contractAddress: PAYOUT_ADDR, chainId: CHAIN_ID,
+  });
+  body.attester = { nonce: 'PSN-0001', signer: '0x' + '55'.repeat(20), signature, payload_hash };
+  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
+  assert.equal(res.status, 422);
+  assert.equal(res.body.error, 'ATTESTER_ADDRESS_MISMATCH');
+  assert.equal(res.body.received.toLowerCase(), body.attester.signer.toLowerCase());
+});
+
+test('preTransferHash: accepts attester.signer matching ATTESTER_ADDRESS even with a garbage signature/payload_hash — attester.signer is the field checked, not a cryptographic recovery', async () => {
   const { app } = setupApp();
   const body = baseBody();
   body.attester.signature = '0x' + 'aa'.repeat(65);
   body.attester.payload_hash = '0x' + '11'.repeat(32);
   const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'INVALID_SIGNATURE');
-});
-
-test('preTransferHash: rejects when the recovered attester does not match ATTESTER_ADDRESS/REGISTERED_SIGNER, regardless of the claimed attester.signer field', async () => {
-  const { app } = setupApp();
-  const body = baseBody();
-  // A validly-formed signature/payload_hash pair from an unrelated key — the claimed
-  // attester.signer field is a lie (set to the real GOLDEN_SIGNER) to prove the check recovers
-  // the actual signer cryptographically rather than trusting the claimed field.
-  const { payload_hash, signature } = signAs('bb'.repeat(32), {
-    quoteId: 'KP-2026-001', triggerRef: 'TRG-0001', coverageCode: '0x01', payoutAmount: 3000,
-    recipient: RECIPIENT, monthKey: '202608', contractAddress: PAYOUT_ADDR, chainId: CHAIN_ID,
-  });
-  body.attester = { nonce: 'PSN-0001', signer: GOLDEN_SIGNER, signature, payload_hash };
-  const res = await request(app).post('/v1/jpyc/preTransferHash').set('x-api-key', API_KEY).send(body);
-  assert.equal(res.status, 422);
-  assert.equal(res.body.error, 'ATTESTER_ADDRESS_MISMATCH');
-  assert.notEqual(res.body.received.toLowerCase(), GOLDEN_SIGNER);
+  assert.equal(res.status, 201);
+  assert.equal(res.body.attester.toLowerCase(), GOLDEN_SIGNER);
+  assert.equal(res.body.evidenceHash, body.attester.payload_hash);
 });
 
 test('preTransferHash: 503s with ATTESTER_ADDRESS_NOT_CONFIGURED when neither ATTESTER_ADDRESS nor REGISTERED_SIGNER is set', async () => {

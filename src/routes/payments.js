@@ -264,21 +264,17 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
     if (!expectedSigner) {
       return res.status(503).json({ error: 'ATTESTER_ADDRESS_NOT_CONFIGURED' });
     }
-    // Recovered directly from the given payload_hash/signature — not the caller-claimed
-    // attester.signer field, which would make this check meaningless (anyone can claim any
-    // signer). This doesn't require knowing Protosure's digest construction: ECDSA recovery only
-    // needs the final signed digest and the signature over it, both supplied by the caller.
-    let recoveredAttester;
-    try {
-      recoveredAttester = ethers.recoverAddress(attester.payload_hash, attester.signature);
-    } catch (e) {
-      return res.status(422).json({ error: 'INVALID_SIGNATURE', message: e.message });
-    }
-    if (recoveredAttester.toLowerCase() !== expectedSigner) {
+    // Checked against the attester.signer field Protosure sends directly — not an ECDSA recovery
+    // from payload_hash/signature. Recovery only proves self-consistency with whatever digest
+    // Protosure hashed internally; it says nothing about whether that digest matches what the
+    // Rider contract reconstructs on-chain to verify attesterSig (it doesn't — see knowledge.md's
+    // "bad attester sig" investigation), so recovering here bought no real assurance. Confirmed by
+    // the request author: attester.signer is the field to check.
+    if (attester.signer.toLowerCase() !== expectedSigner) {
       return res.status(422).json({
         error: 'ATTESTER_ADDRESS_MISMATCH',
         expected: process.env.ATTESTER_ADDRESS || process.env.REGISTERED_SIGNER,
-        received: recoveredAttester,
+        received: attester.signer,
       });
     }
 
@@ -302,7 +298,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       monthKey,
       digest,
       attester.signature,
-      recoveredAttester,
+      attester.signer,
       'protosure-direct',
       'signed',
       attester.nonce
@@ -334,7 +330,7 @@ export function paymentsRouter(db, { chain = chainDefault } = {}) {
       // own configured signer identity for audit purposes; the attester's (Protosure's) signature
       // is the only one that actually authorizes the on-chain transfer via submitTrigger.
       oracle: process.env.REGISTERED_SIGNER || null,
-      attester: recoveredAttester,
+      attester: attester.signer,
       oracleSig: null,
       attesterSig: attester.signature,
       evidenceHash: digest,

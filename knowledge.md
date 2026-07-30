@@ -62,23 +62,27 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   force on `POST /v1/attestation/trigger` and the live-rater path (`rater-client.js`) — this change
   is scoped to the Mendix-direct endpoint only; don't assume it generalizes elsewhere in the payout
   path without checking.
-- **Scope change (2026-07-30, later same day): signature verification was partially reinstated** —
-  `attester.signature`/`payload_hash` are no longer trusted blind. `preTransferHash` now recovers
-  the actual signer via `ethers.recoverAddress(attester.payload_hash, attester.signature)` (works
-  regardless of what digest scheme produced `payload_hash` — recovery only needs the final signed
-  digest + signature, not knowledge of the preimage) and requires it to equal `expectedSigner =
-  ATTESTER_ADDRESS || REGISTERED_SIGNER` — **`ATTESTER_ADDRESS` is referred to first**, confirmed
-  explicitly by the request author; `REGISTERED_SIGNER` is a fallback only, for deployments that
-  haven't set `ATTESTER_ADDRESS` yet (they're the same value, `0x2c75...`, in this deployment
-  today, but conceptually distinct — `ATTESTER_ADDRESS` is the Rider contract's own expected
-  attester, `REGISTERED_SIGNER` is `MimamorParametric`'s registered signer). The caller-claimed
-  `attester.signer` field is never trusted or compared against anything — the persisted
-  `attestations.signer` column and the response's `attester` field are now the *recovered* address,
-  not the claimed one. Missing both env vars fails safe: `503 ATTESTER_ADDRESS_NOT_CONFIGURED`. A
-  mismatch or an unrecoverable signature is `422 ATTESTER_ADDRESS_MISMATCH` / `422
-  INVALID_SIGNATURE`. `validateRules()` (fixed schedule / cool-down / cap) is still **not**
-  re-run — this reinstated check is signature-only, not a full return to the pre-2026-07-30 (early)
-  behavior.
+- **Scope change (2026-07-30, later same day): attester verification was partially reinstated, but
+  checks the `attester.signer` field directly — not an ECDSA recovery.** `preTransferHash` requires
+  `attester.signer.toLowerCase() === expectedSigner`, where `expectedSigner = ATTESTER_ADDRESS ||
+  REGISTERED_SIGNER` — **`ATTESTER_ADDRESS` is referred to first**, confirmed explicitly by the
+  request author; `REGISTERED_SIGNER` is a fallback only, for deployments that haven't set
+  `ATTESTER_ADDRESS` yet (they're the same value, `0x2c75...`, in this deployment today, but
+  conceptually distinct — `ATTESTER_ADDRESS` is the Rider contract's own expected attester,
+  `REGISTERED_SIGNER` is `MimamorParametric`'s registered signer). Missing both env vars fails
+  safe: `503 ATTESTER_ADDRESS_NOT_CONFIGURED`. A mismatch is `422 ATTESTER_ADDRESS_MISMATCH`.
+  - **An earlier version of this check (same day) instead did `ethers.recoverAddress(payload_hash,
+    signature)` and compared the recovered address** — reverted at the request author's explicit
+    instruction to check `attester.signer` directly instead. Rationale, confirmed live during the
+    "bad attester sig" investigation below: recovery only proves the signature is self-consistent
+    with whatever `payload_hash` Protosure computed — it says nothing about whether that digest
+    matches what the Rider contract reconstructs on-chain, so it bought no real assurance while
+    looking more rigorous than it was. `attester.signer` is simply the field Protosure sends and
+    is what's actually checked now; the persisted `attestations.signer` column and the response's
+    `attester` field both echo it verbatim (not a recovered value).
+  - `validateRules()` (fixed schedule / cool-down / cap) is still **not** re-run by any version of
+    this check — signer/attester verification and rules validation are separate concerns; see the
+    2026-07-30 (earlier) bullet above.
 - **`coverage_code` arrives as the on-chain hex byte** (e.g. `"0x01"`), not the human `triggerCode`
   (`"PT-01"`) — reverse-mapped via `COVERAGE_CODE` since every local rule is keyed by
   `triggerCode`. An unrecognized byte is `400 UNKNOWN_COVERAGE_CODE`, not a 422 rule failure.
@@ -94,8 +98,9 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   (`ORACLE_SIGNER_PRIVATE_KEY`, not `REGISTERED_SIGNER`). Don't confuse the two `oracleSig`s.
 - **Scope change (2026-07-30): `POST /v1/jpyc/transfer` now calls a different, externally-deployed
   "Rider" contract for `source:"protosure-direct"` attestations only**, because that contract's
-  `submitTrigger` verifies *two* signatures (`oracleSig`, `attesterSig`) over the same digest,
-  unlike `MimamorParametric.sol`'s single `signature` param — confirmed by the request author, not
+  `submitTrigger` verifies *two* signatures (`oracleSig`, `attesterSig` — independently, over
+  different digests each, see the 2026-07-30 update below), unlike `MimamorParametric.sol`'s
+  single `signature` param — confirmed by the request author, not
   derivable from this repo (Rider's Solidity source isn't here; only the ABI fragment
   `src/chain/chain.js#RIDER_ABI` is, hand-written from the confirmed function signature). Mechanics:
   - Routing is keyed on the stored `attestations.source` column, checked in
@@ -128,6 +133,26 @@ See `CLAUDE.md`'s "Knowledge base" section for the read/update rule Claude Code 
   - Missing `ORACLE_SIGNER_PRIVATE_KEY` fails safe: `503 ORACLE_SIGNER_NOT_CONFIGURED` from
     `/v1/jpyc/transfer`, same fail-safe pattern as `CHAIN_NOT_CONFIGURED` elsewhere — see
     `OracleSignerNotConfiguredError` in `src/routes/payments.js`.
+  - **Live-verified finding (2026-07-30, Render logs on `fam-pulse-api`, `[chain] payout submission
+    failed: bad attester sig`)**: on every real `/v1/jpyc/transfer` attempt for a `protosure-direct`
+    attestation so far, Rider's on-chain revert reason has been consistently `bad attester sig`,
+    **never** `bad oracle sig` — i.e. the oracle digest formula above is confirmed correct (Rider
+    accepts it), but Protosure's `attesterSig` fails Rider's on-chain attester check every time.
+    Likely cause: Rider's `submitTrigger` receives no digest/hash argument for `attesterSig` to be
+    checked against directly — it must reconstruct whatever digest it verifies purely from
+    `(evidenceHash, beneficiary, incidentTimestamp, amount)` plus its own address/chain id, the same
+    way this service derives the oracle digest above. If Protosure is still signing attestations
+    against a different digest (e.g. the older `policyId`/`coverageCode`/`monthKey`/`PAYOUT_ADDR`-
+    bound `computeInner` scheme — see the "Signature digest" section below), that signature is
+    valid but for the wrong message, so on-chain `ECDSA.recover` returns some other address and the
+    registered-attester check fails. **Not fixable in this repo alone** — `attesterSig` is produced
+    by Protosure, not this service, and is trusted verbatim (see above). Needs either (a) Protosure
+    signing attestations against the same evidence-based digest formula confirmed working for
+    `oracleSig`, or (b) the real Rider Solidity source, to confirm the actual digest scheme it
+    expects for `attesterSig` if it's genuinely different from the oracle one. As of this writing,
+    unresolved — treat any `protosure-direct` transfer as expected to fail with `SIGNER_MISMATCH`
+    ("bad attester sig") until this is reconciled with whoever owns Protosure's signing / Rider's
+    deployment.
 - **`amountWei` is not wei-scaled** — confirmed by the request author. It's `payoutAmount`
   unchanged, under a Wei-sounding field name only. This repo's `DemoJPYC.sol` is hardcoded to
   `decimals() == 0` (whole-JPY units); a real 18-decimal token would be a much wider change than
