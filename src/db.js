@@ -7,7 +7,8 @@ import { computeFRS } from './frs.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.join(__dirname, '..', 'data', 'kazoku.sqlite');
 
-export const HOME = { lat: 35.6595, lng: 139.7005 };
+// Yoshiko's home (the elder/parent-role household, yoshiko-001) — Akita City, Akita Prefecture.
+export const HOME = { lat: 39.7186, lng: 140.1024 };
 export const DEFAULT_PARENT_ID = 'yoshiko-001';
 export const SECOND_PARENT_ID = 'yoshiko-002';
 
@@ -274,8 +275,8 @@ function defaultSettings(parentId, overrides = {}) {
     updatedAt: Date.now(),
     updatedBy: 'sakura',
     knownSafePlaces: [
-      { name: 'Sunrise Supermarket', lat: 35.6612, lng: 139.7031 },
-      { name: "Yoshiko's Clinic", lat: 35.658, lng: 139.6988 },
+      { name: 'サンライズスーパー', lat: 35.6612, lng: 139.7031 },
+      { name: '田中クリニック', lat: 35.658, lng: 139.6988 },
     ],
     chips: {
       careNetwork: 'auto',
@@ -348,7 +349,19 @@ export function seed(db) {
   const upsertSettings = db.prepare(
     `INSERT INTO settings (parentId, singleton_json) VALUES (?, ?)`
   );
-  upsertSettings.run(DEFAULT_PARENT_ID, JSON.stringify(defaultSettings(DEFAULT_PARENT_ID)));
+  upsertSettings.run(
+    DEFAULT_PARENT_ID,
+    JSON.stringify(
+      defaultSettings(DEFAULT_PARENT_ID, {
+        // Same relative offsets from home as the shared default, re-centered on Akita — keeps
+        // movingTowardSafePlace (src/routes/incidents.js) meaningful after the move.
+        knownSafePlaces: [
+          { name: 'サンライズスーパー', lat: 39.7203, lng: 140.105 },
+          { name: '田中クリニック', lat: 39.7171, lng: 140.1007 },
+        ],
+      })
+    )
+  );
   upsertSettings.run(
     SECOND_PARENT_ID,
     JSON.stringify(
@@ -362,7 +375,7 @@ export function seed(db) {
     {
       lineId: 'L1',
       type: 'visit',
-      description: 'Home-care visit — Kenji T., 2026-06-05',
+      description: '訪問介護 — Kenji T., 2026-06-05',
       amount: 3000,
       attested: true,
       disputed: false,
@@ -371,7 +384,7 @@ export function seed(db) {
     {
       lineId: 'L2',
       type: 'visit',
-      description: 'Home-care visit — Aiko M., 2026-06-12',
+      description: '訪問介護 — Aiko M., 2026-06-12',
       amount: 3000,
       attested: true,
       disputed: false,
@@ -380,7 +393,7 @@ export function seed(db) {
     {
       lineId: 'L3',
       type: 'visit',
-      description: 'Home-care visit — Kenji T., 2026-06-20',
+      description: '訪問介護 — Kenji T., 2026-06-20',
       amount: 3000,
       attested: true,
       disputed: false,
@@ -389,7 +402,7 @@ export function seed(db) {
     {
       lineId: 'L4',
       type: 'reward',
-      description: 'Wandering-response reward (deferred)',
+      description: '徘徊対応報酬（保留中）',
       amount: 3000,
       attested: false,
       disputed: false,
@@ -437,7 +450,7 @@ export function seed(db) {
     'SC-FUJI-0001',
     'KP-2026-001',
     'in_force',
-    'Sakura Tanaka',
+    'Yoshiko Tanaka',
     null,
     JSON.stringify([]),
     Date.now(),

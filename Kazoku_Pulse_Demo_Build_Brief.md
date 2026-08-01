@@ -56,7 +56,7 @@ Stack: Node 20+, ESM, Express, better-sqlite3, ethers v6, @anthropic-ai/sdk, zod
 
 Tables: `metrics(parentId, date, dailySteps, sleepHours, heartRateAvg, heartRateResting, ts)` PK(parentId,date) · `frs_history(parentId, date, score, factors_json)` · `incidents(id, type, severity, ts, active, lat, lng, exitTs, dwellMin, escalationDueTs, pickupConfirmed, dropoffConfirmed, timeline_json, pt01Eligible)` · `dispatches(id, incidentId, status, driver_json, etaMin, lat, lng, retryCount)` · `care_requests(id, needSummary, windows_json, channelStatus_json, slaDueTs, plan_json, status)` · `settlements(id, period, lines_json, pt03Credit)` · `attestations(id, policyId, triggerCode, payoutAmount, recipient, timestamp, nonce, payloadHash, signature, signerAddress, txHash, status)` · `settings(singleton_json)` · `wallets(name, address)`.
 
-Seed (also what `POST /v1/demo/reset` restores): parent `yoshiko-001` with 7 days of realistic metrics (today ≈ FRS 82), home at lat 35.6595/lng 139.7005, radius 500 m, June settlement with 4 lines (3 attested visits + 1 deferred reward), empty incidents, settings all `auto`.
+Seed (also what `POST /v1/demo/reset` restores): parent `yoshiko-001` with 7 days of realistic metrics (today ≈ FRS 82), home at lat 39.7186/lng 140.1024 (Akita City, Akita Prefecture), radius 500 m, June settlement with 4 lines (3 attested visits + 1 deferred reward), empty incidents, settings all `auto`.
 
 ## 2. Endpoints by tier
 

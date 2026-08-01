@@ -4,7 +4,7 @@
 
 import crypto from 'node:crypto';
 
-const DRIVER = { name: 'Kenji T.', rating: 4.9, vehicle: 'Toyota Prius', plate: 'Shinagawa 500 A 12-34' };
+const DRIVER = { name: 'Kenji T.', rating: 4.9, vehicle: 'トヨタ プリウス', plate: '秋田 500 A 12-34' };
 const DRIVER_WALLET = '0x' + crypto.randomBytes(20).toString('hex');
 
 const timers = new Map(); // dispatchId -> timeout handles

@@ -159,7 +159,7 @@ const DriverInfo = {
   properties: {
     name: { type: 'string', example: 'Kenji T.' },
     rating: { type: 'number', example: 4.9 },
-    vehicle: { type: 'string', example: 'Toyota Prius' },
+    vehicle: { type: 'string', example: 'トヨタ プリウス' },
     plate: { type: 'string' },
     driverWalletAddr: { type: 'string' },
   },

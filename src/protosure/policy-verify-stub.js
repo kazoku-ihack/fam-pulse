@@ -17,7 +17,7 @@ const FIXTURES = [
       originalQuoteId: 'QT-2026-000481',
       smartContractId: 'SC-FUJI-0001',
       policyStatus: 'in_force',
-      insuredDisplayName: 'Sakura Tanaka',
+      insuredDisplayName: 'Yoshiko Tanaka',
       coverages: ['PT-01', 'PT-02', 'PT-03', 'PT-04', 'PT-05', 'PT-06'],
     },
   },

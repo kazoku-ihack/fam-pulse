@@ -244,7 +244,7 @@ export function careRouter(db, { callJson } = {}) {
     lines.push({
       lineId: randomUUID(),
       type: 'visit',
-      description: `Home-care visit — ${plan.staff}, ${plan.visitAt}`,
+      description: `訪問介護 — ${plan.staff}, ${plan.visitAt}`,
       amount: plan.rate,
       attested: false,
       disputed: false,
