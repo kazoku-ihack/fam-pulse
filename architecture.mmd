@@ -1,0 +1,183 @@
+%% Kazoku Pulse — full system architecture
+%% Apple Watch -> Parent app (elder) -> backend -> Child app (Mendix, caregiver)
+%% External layer: Claude, Uber, caretaker email, Protosure, Avalanche Fuji on-chain JPYC payout
+flowchart TB
+
+    %% ============ CLIENT LAYER ============
+    subgraph SG_CLIENT["CLIENT LAYER"]
+        AW["Apple Watch<br/>HealthKit sensors:<br/>steps · heart rate · sleep · GPS"]
+        PARENTAPP["iOS Parent App<br/>(elder-facing, role: parent)<br/>wears the watch, receives SOS/consent"]
+        CHILDAPP["Mendix Child App<br/>(caregiver-facing, role: adult_child)<br/>approvals · dispatch · attestation · settlement"]
+        JUDGE["Judge Console<br/>public/judge.html<br/>demo control panel"]
+    end
+
+    AW -->|"HealthKit sync"| PARENTAPP
+    PARENTAPP -->|"POST /v1/healthkit/metrics<br/>POST /v1/sos<br/>PATCH /v1/consent<br/>GET /v1/parent/status<br/>GET /v1/telemetry<br/>GET /v1/carePlan/next"| APIKEY
+    CHILDAPP -->|"GET /v1/events (poll = push)<br/>GET /v1/incidents · PATCH /v1/incident/:id<br/>POST /v1/uber/dispatch<br/>POST /v1/careRequest · PATCH /v1/carePlan/:id<br/>POST /v1/attestation/trigger<br/>POST /v1/jpyc/preTransferHash · /transfer · /batchTransfer<br/>PATCH /v1/settlement/:id/line/:lineId<br/>POST /v1/activation/verify · /complete"| APIKEY
+    JUDGE -->|"/v1/demo/* — no x-api-key, optional JUDGE_KEY"| JUDGEGATE
+
+    %% ============ GATEWAY / MIDDLEWARE ============
+    subgraph SG_GATEWAY["API GATEWAY — src/server.js"]
+        CORSMW["CORS"]
+        BODYMW["express.json()<br/>keeps req.rawBody for HMAC verify"]
+        RATEMW["rate limiter<br/>120 req/min default"]
+        UBERWH["Uber Webhook Router<br/>HMAC (x-uber-signature)<br/>mounted BEFORE apiKeyAuth"]
+        JUDGEGATE["judgeKeyAuth + demoRouter<br/>mounted BEFORE apiKeyAuth"]
+        APIKEY["apiKeyAuth<br/>x-api-key, fail-closed (500 if unset, 401 mismatch)"]
+        DEVICE["requireDevice<br/>optional Bearer deviceToken →<br/>req.household + role scope (additive)"]
+    end
+    CORSMW --> BODYMW --> RATEMW --> UBERWH --> APIKEY
+    APIKEY --> DEVICE
+
+    %% ============ ROUTES ============
+    subgraph SG_ROUTES["EXPRESS ROUTES — src/routes/*"]
+        R_ACT["activation.js<br/>tables: households, devices,<br/>activations, activation_attempts"]
+        R_HK["healthkit.js<br/>tables: metrics"]
+        R_FRS["frs.js<br/>tables: frs_history, frs_reviews"]
+        R_INC["incidents.js<br/>tables: incidents<br/>+ startGeofenceTick()"]
+        R_TEL["telemetry.js<br/>reads: settings, metrics"]
+        R_PAR["parent.js<br/>tables: settings, care_requests"]
+        R_EVT["events.js<br/>tables: events (push feed)"]
+        R_DISP["dispatch.js<br/>tables: dispatches<br/>+ uberWebhookRouter"]
+        R_CARE["care.js<br/>tables: care_requests"]
+        R_PAY["payments.js<br/>tables: attestations, cap_ledger,<br/>wallets, settlements"]
+        R_ATT["attestation.js<br/>tables: attestations, cap_ledger"]
+        R_SET["settings.js<br/>tables: settings"]
+        R_DEMO["demo.js<br/>wipe()/resetDb(), scenario triggers"]
+    end
+    DEVICE --> R_ACT & R_HK & R_FRS & R_INC & R_TEL & R_PAR & R_EVT & R_DISP & R_CARE & R_PAY & R_ATT & R_SET
+    JUDGEGATE --> R_DEMO
+
+    %% ============ DOMAIN / BUSINESS LOGIC ============
+    subgraph SG_LOGIC["DOMAIN / BUSINESS LOGIC (Claude never gates money)"]
+        BL_RULES["attestation-rules.js<br/>fixed schedule PT-01..PT-05,<br/>PT-01 monthly cool-down,<br/>monthKeyTokyo()"]
+        BL_COV["coverage.js<br/>single source: coverage code ↔<br/>trigger code ↔ MONTHLY_CAP"]
+        BL_FRSCALC["frs.js<br/>wellness score computation"]
+        BL_GEO["geofence.js<br/>re-reads config every tick,<br/>dwell-threshold wandering detection"]
+        BL_NORM["activation-normalise.js"]
+        BL_ALARM["alarms.js"]
+    end
+    R_ATT --> BL_RULES --> BL_COV
+    R_HK --> BL_FRSCALC
+    BL_GEO -.->|"periodic tick"| R_INC
+
+    %% ============ CLAUDE DECISION LAYER ============
+    subgraph SG_CLAUDE["CLAUDE DECISION LAYER — src/claude/* (shapes alerts only, never payouts)"]
+        CL_CLIENT["client.js<br/>zod schema validation + 1 retry,<br/>hard timeout, {purpose,promptHash,ms} log<br/>(no raw prompt/response logged)"]
+        CL_TRIAGE["wandering-triage.js<br/>sets incident severity"]
+        CL_REVIEW["frs-review.js<br/>voids/downgrades false alarms<br/>(auditable row, never deleted)"]
+        CL_KEY["pendingKey.js<br/>judge-supplied API key override<br/>→ short-lived client, never cached"]
+    end
+    R_INC --> CL_TRIAGE --> CL_CLIENT
+    R_FRS --> CL_REVIEW --> CL_CLIENT
+    R_CARE -->|"channel selection + reply parsing"| CL_CLIENT
+    CL_KEY -.->|"per-call apiKey wins over ANTHROPIC_API_KEY"| CL_CLIENT
+    CL_CLIENT -->|"Messages API"| ANTHROPIC[("Anthropic Claude API")]
+
+    %% ============ SIMULATORS ============
+    subgraph SG_SIMS["SIMULATORS — src/sims/* (DEMO_TIMESCALE compressed)"]
+        SIM_GPS["gps.js<br/>scripted GPS wandering walk"]
+        SIM_UBER["sims/uber.js<br/>scripted driver lifecycle,<br/>calls own /v1/webhooks/uber"]
+    end
+    BL_GEO --> SIM_GPS
+    R_DISP --> SIM_UBER
+    SIM_UBER -->|"self-signed HMAC callbacks"| UBERWH
+    UBERWH --> R_DISP
+
+    %% ============ EXTERNAL INTEGRATIONS ============
+    subgraph SG_EXT["EXTERNAL INTEGRATIONS"]
+        UBER_EXT[("Uber<br/>(dispatch webhook contract,<br/>simulated in demo)")]
+        EMAIL_EXT[("SMTP / IMAP<br/>caretaker network email<br/>send request → poll reply")]
+    end
+    R_DISP -.->|"real provider contract (prod)"| UBER_EXT
+    R_CARE -->|"SMTP_URL: send care request"| EMAIL_EXT
+    EMAIL_EXT -->|"IMAP_URL poll / SIM_CARE_REPLY=1"| R_CARE
+
+    %% ============ PROTOSURE ============
+    subgraph SG_PROTOSURE["PROTOSURE INTEGRATION — src/protosure/*"]
+        PS_VERIFY["policy-verify.js<br/>ACTIVATION_MODE=protosure<br/>POST /v1/activation/verify"]
+        PS_RATER["rater-client.js<br/>ATTESTATION_MODE=protosure<br/>calculate_data (HTTP Basic auth)"]
+        PS_STUB["stub.js<br/>offline ECDSA signer<br/>(STUB_SIGNER_PRIVATE_KEY, pure crypto)"]
+    end
+    R_ACT -->|"policy/dob/phone/email verify<br/>(never stored raw)"| PS_VERIFY
+    PS_VERIFY -->|"502 PROTOSURE_UNAVAILABLE if unreachable"| PROTOSURE_EXT[("Protosure Rater<br/>external service")]
+    R_ATT -->|"ATTESTATION_MODE=stub"| PS_STUB
+    R_ATT -->|"ATTESTATION_MODE=protosure"| PS_RATER --> PROTOSURE_EXT
+    PS_RATER -.->|"unreachable/invalid + ATTESTATION_FALLBACK=stub<br/>→ source:stub-fallback (surfaced, not hidden)"| PS_STUB
+    CHILDAPP -.->|"NEW (2026-07-29): Mendix calls<br/>Protosure directly, then hands us<br/>the signed attestation"| PROTOSURE_EXT
+    PROTOSURE_EXT -.->|"POST /v1/jpyc/preTransferHash<br/>source:protosure-direct, attester.signer<br/>checked == ATTESTER_ADDRESS‖REGISTERED_SIGNER"| R_PAY
+
+    %% ============ ATTESTATION -> PAYOUT DATA FLOW ============
+    PS_STUB -->|"signed attestation row"| R_ATT
+    PS_RATER -->|"signed attestation row"| R_ATT
+    R_ATT -->|"attestations{status:signed}<br/>cap_ledger{status:reserved}"| DB
+    R_PAY -->|"POST /v1/jpyc/transfer or /batchTransfer<br/>routes on attestations.source"| CHAINJS
+
+    %% ============ CHAIN LAYER ============
+    subgraph SG_CHAIN["AVALANCHE CHAIN LAYER — src/chain/*"]
+        CHAINJS["chain.js<br/>ethers v6 provider + hand-written ABI<br/>(no hardhat artifacts at runtime)"]
+        RELAYER[("Relayer wallet<br/>STUB_SIGNER_PRIVATE_KEY<br/>pays gas, no msg.sender restriction")]
+        C_JPYC["DemoJPYC (ERC20)<br/>JPYC_ADDR, decimals()==0<br/>whole-JPY units"]
+        C_PAYOUT["MimamorParametric<br/>PAYOUT_ADDR<br/>submitTrigger(single signature)<br/>usedNonce[triggerRef] dedup, monthSpend cap"]
+        C_RIDER["Rider (external contract)<br/>RIDER_ADDR<br/>submitTrigger(oracleSig, attesterSig)<br/>— dual-sig, independently verified"]
+        C_RIDERFB["MimamorParametricBind<br/>RIDER_FALLBACK_ADDR<br/>bindAddress=PAYOUT_ADDR workaround<br/>for Rider's attesterSig digest mismatch"]
+    end
+    CHAINJS --> RELAYER
+    RELAYER -->|"source: stub / protosure / stub-fallback"| C_PAYOUT
+    RELAYER -->|"source: protosure-direct,<br/>RIDER_FALLBACK_ADDR unset"| C_RIDER
+    RELAYER -->|"source: protosure-direct,<br/>RIDER_FALLBACK_ADDR set"| C_RIDERFB
+    C_PAYOUT -->|"transfer()"| C_JPYC
+    C_RIDER -->|"transfer()"| C_JPYC
+    C_RIDERFB -->|"transfer()"| C_JPYC
+    C_JPYC -->|"mined tx, Snowtrace-visible"| FUJI[("Avalanche Fuji Testnet")]
+    C_PAYOUT -. deployed on .-> FUJI
+    C_RIDER -. deployed on .-> FUJI
+    C_RIDERFB -. deployed on .-> FUJI
+
+    C_JPYC -->|"recipient wallet credited —<br/>parametric trigger condition met,<br/>payout released to the insured"| RECIPIENT["Insured's Wallet<br/>(e.g. sakura / SAKURA_WALLET_ADDR)"]
+
+    R_PAY -->|"tx hash, status:paid<br/>settlements + wallets update"| DB
+    R_PAY -.->|"cap_ledger reserved→confirmed<br/>(local pre-check only;<br/>on-chain monthSpend is real source of truth)"| DB
+
+    %% ============ DATA LAYER ============
+    subgraph SG_DATA["DATA LAYER — SQLite (better-sqlite3), src/db.js — sole DB access point"]
+        DB[("SQLite<br/>seedIfEmpty() / wipe() / resetDb()")]
+        TABLES["Tables:<br/>households · devices · activations · activation_attempts<br/>metrics · frs_history · frs_reviews<br/>incidents · dispatches · care_requests<br/>settlements · attestations · cap_ledger<br/>settings · wallets · events<br/><br/>wipe() never touches wallets or cap_ledger<br/>(on-chain state persists across demo resets)"]
+        DB -.- TABLES
+    end
+    R_ACT --> DB
+    R_HK --> DB
+    R_FRS --> DB
+    R_INC --> DB
+    R_PAR --> DB
+    R_EVT --> DB
+    R_DISP --> DB
+    R_CARE --> DB
+    R_SET --> DB
+    R_DEMO -->|"resets all tables except<br/>wallets, cap_ledger"| DB
+
+    DB -->|"GET /v1/events (poll)"| CHILDAPP
+    DB -->|"GET /v1/parent/status,<br/>GET /v1/carePlan/next"| PARENTAPP
+
+    %% ============ STYLES ============
+    classDef client fill:#4A6FA5,stroke:#2C4770,color:#fff
+    classDef gateway fill:#6b7280,stroke:#374151,color:#fff
+    classDef routes fill:#7C5CBF,stroke:#4E3A80,color:#fff
+    classDef logic fill:#2E9E83,stroke:#1B6350,color:#fff
+    classDef claude fill:#D97757,stroke:#9C4E33,color:#fff
+    classDef sims fill:#C9A227,stroke:#8C7017,color:#fff
+    classDef ext fill:#B95C8A,stroke:#7A3A5B,color:#fff
+    classDef protosure fill:#3B82A6,stroke:#255269,color:#fff
+    classDef chain fill:#3F7D3F,stroke:#295529,color:#fff
+    classDef data fill:#8B5E3C,stroke:#5C3E28,color:#fff
+
+    class AW,PARENTAPP,CHILDAPP,JUDGE client
+    class CORSMW,BODYMW,RATEMW,UBERWH,JUDGEGATE,APIKEY,DEVICE gateway
+    class R_ACT,R_HK,R_FRS,R_INC,R_TEL,R_PAR,R_EVT,R_DISP,R_CARE,R_PAY,R_ATT,R_SET,R_DEMO routes
+    class BL_RULES,BL_COV,BL_FRSCALC,BL_GEO,BL_NORM,BL_ALARM logic
+    class CL_CLIENT,CL_TRIAGE,CL_REVIEW,CL_KEY,ANTHROPIC claude
+    class SIM_GPS,SIM_UBER sims
+    class UBER_EXT,EMAIL_EXT ext
+    class PS_VERIFY,PS_RATER,PS_STUB,PROTOSURE_EXT protosure
+    class CHAINJS,RELAYER,C_JPYC,C_PAYOUT,C_RIDER,C_RIDERFB,FUJI,RECIPIENT chain
+    class DB,TABLES data
